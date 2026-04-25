@@ -66,7 +66,38 @@ bot.hears('👥 Affiliate', async (ctx) => {
         ctx.reply("⚠️ Error loading affiliate data. Try /start");
     }
 });
+bot.action(/^verify_tg_(.+)$/, async (ctx) => {
+    const taskId = ctx.match[1];
+    const task = await Task.findOne({ id: taskId });
+    const userId = ctx.from.id;
 
+    // 1. Get the Channel Username from the Link
+    // Example: https://t.me/ExampleChannel -> @ExampleChannel
+    const channelId = "@" + task.url.split('t.me/')[1].split('/')[0];
+
+    try {
+        // 2. Ask Telegram: "Is this user in this channel?"
+        const member = await ctx.telegram.getChatMember(channelId, userId);
+        
+        // 3. Check if they are a member, admin, or creator
+        if (['member', 'administrator', 'creator'].includes(member.status)) {
+            
+            // 💰 CREDIT THE USER
+            await User.updateOne({ user_id: userId }, { 
+                $inc: { balance: task.reward, total_earned: task.reward },
+                $push: { completed_tasks: taskId }
+            });
+
+            ctx.editMessageText(`✅ *Joined!* ${task.reward} USDT added to your balance.`);
+        } else {
+            // ❌ USER HAS NOT JOINED
+            ctx.answerCbQuery("⚠️ You haven't joined yet! Please join then click verify.", { show_alert: true });
+        }
+    } catch (e) {
+        // 🛑 BOT PERMISSION ERROR
+        ctx.answerCbQuery("❌ Error: Make sure the Bot is an Admin in the channel!", { show_alert: true });
+    }
+});
 // --- 2. EARN MORE (CATEGORY MENU) ---
 bot.hears('💸 Earn More', (ctx) => {
     const msg = "📂 *Select a Task Category:*\n\nComplete tasks below to increase your balance.";
