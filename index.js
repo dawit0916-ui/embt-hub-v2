@@ -7,8 +7,8 @@ const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
 
-// --- MONGODB CONNECTION ---
-mongoose.connect(process.env.MONGO_URI).then(() => console.log("✅ System Live"));
+// --- 1. CLOUD CONNECTION ---
+mongoose.connect(process.env.MONGO_URI).then(() => console.log("✅ Database Synced"));
 
 const User = mongoose.model('User', new mongoose.Schema({
     user_id: Number,
@@ -16,105 +16,107 @@ const User = mongoose.model('User', new mongoose.Schema({
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
     current_state: String,
-    red_flag: { type: Boolean, default: false }
+    red_flag: { type: Boolean, default: false },
+    referralCount: { type: Number, default: 0 }
 }));
 
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
 }));
 
-// --- MAIN MENU ---
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 
-// --- 1. VIEW TASK DETAILS ---
+// --- 2. START & RECOVERY ---
+bot.start(async (ctx) => {
+    let user = await User.findOne({ user_id: ctx.from.id });
+    if (!user) {
+        user = new User({ user_id: ctx.from.id });
+        await user.save();
+    }
+    ctx.replyWithMarkdown("🚀 *EMBT Center Launched!* \nReady to earn USDT?", mainMenu);
+});
+
+// --- 3. TASK LISTING WITH IDs ---
+bot.action(/^cat_(.+)$/, async (ctx) => {
+    const platform = ctx.match[1];
+    const user = await User.findOne({ user_id: ctx.from.id });
+    const tasks = await Task.find({ type: platform, id: { $nin: user.completed_tasks } });
+    
+    if (tasks.length === 0) return ctx.answerCbQuery("📌 No tasks available.", { show_alert: true });
+
+    const buttons = tasks.map(t => [
+        Markup.button.callback(`💰 ${t.name} | ID: ${t.id}`, `view_task_${t.id}`)
+    ]);
+    buttons.push([Markup.button.callback('⬅️ Back', 'earn_more_menu')]);
+    
+    ctx.editMessageText(`📌 *Available ${platform.toUpperCase()} Tasks*`, Markup.inlineKeyboard(buttons));
+});
+
+// --- 4. ADMIN: DELETE TASK ---
+bot.command('del', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) return;
+    const taskId = ctx.message.text.split(' ')[1];
+    if (!taskId) return ctx.reply("❌ Use: /del task_12345");
+
+    const deleted = await Task.findOneAndDelete({ id: taskId });
+    if (deleted) ctx.reply(`✅ Task ${taskId} has been deleted.`);
+    else ctx.reply("❌ Task ID not found.");
+});
+
+// --- 5. ADMIN: ADD TASK ---
+bot.command('add', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) return;
+    const parts = ctx.message.text.split('/add ')[1]?.split('|').map(i => i.trim());
+    if (!parts || parts.length < 5) return ctx.reply("Format: Name|Link|Reward|Type|MaxUsers");
+    
+    const taskId = 't' + Math.floor(Math.random() * 10000); // Shorter ID for easier deletion
+    const newTask = new Task({ 
+        id: taskId, 
+        name: parts[0], 
+        url: parts[1], 
+        reward: parseFloat(parts[2]), 
+        type: parts[3], 
+        max_users: parseInt(parts[4]) 
+    });
+    await newTask.save();
+    ctx.reply(`✅ *Task Added!*\nID: \`${taskId}\``, { parse_mode: 'Markdown' });
+});
+
+// --- 6. VIEW TASK DETAILS (REFIXED) ---
 bot.action(/^view_task_(.+)$/, async (ctx) => {
     const taskId = ctx.match[1];
     const task = await Task.findOne({ id: taskId });
-    if (!task) return ctx.answerCbQuery("❌ Task not found.");
+    if (!task) return ctx.answerCbQuery("❌ Task expired.");
 
-    const msg = `📝 *Task:* ${task.name}\n💰 *Reward:* ${task.reward} USDT\n\n` +
-                `1️⃣ Click the button below to perform the task.\n` +
-                `2️⃣ Return here and click "Verify".`;
-
+    const msg = `📝 *Task:* ${task.name}\n💰 *Reward:* ${task.reward} USDT\n🆔 *ID:* \`${task.id}\``;
     const buttons = [[Markup.button.url('🔗 Go to Task', task.url)]];
     
-    if (task.type === 'telegram') {
-        buttons.push([Markup.button.callback('✅ Verify Join', `verify_tg_${taskId}`)]);
-    } else {
-        buttons.push([Markup.button.callback('📸 Upload Screenshot', `upload_proof_${taskId}`)]);
-    }
+    if (task.type === 'telegram') buttons.push([Markup.button.callback('✅ Verify Join', `verify_tg_${taskId}`)]);
+    else buttons.push([Markup.button.callback('📸 Upload Screenshot', `upload_proof_${taskId}`)]);
     
     ctx.editMessageText(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
 });
 
-// --- 2. TELEGRAM JOIN VERIFIER ---
-bot.action(/^verify_tg_(.+)$/, async (ctx) => {
-    const taskId = ctx.match[1];
-    const task = await Task.findOne({ id: taskId });
-    const userId = ctx.from.id;
-
-    // Extract channel username from URL (e.g., https://t.me/example -> @example)
-    const channelId = "@" + task.url.split('t.me/')[1].split('/')[0];
-
-    try {
-        const member = await ctx.telegram.getChatMember(channelId, userId);
-        if (['member', 'administrator', 'creator'].includes(member.status)) {
-            // Success! Credit the user
-            await User.updateOne({ user_id: userId }, { 
-                $inc: { balance: task.reward, total_earned: task.reward },
-                $push: { completed_tasks: taskId }
-            });
-            await Task.updateOne({ id: taskId }, { $inc: { completions: 1 } });
-            
-            ctx.editMessageText(`✅ *Success!* ${task.reward} USDT added to balance.`, { parse_mode: 'Markdown' });
-        } else {
-            ctx.answerCbQuery("❌ You haven't joined the channel yet!", { show_alert: true });
-        }
-    } catch (e) {
-        ctx.answerCbQuery("⚠️ Error: Bot must be Admin in the target channel to verify.", { show_alert: true });
-    }
-});
-
-// --- 3. SCREENSHOT PROOF HANDLER ---
-bot.action(/^upload_proof_(.+)$/, async (ctx) => {
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: `upload_${ctx.match[1]}` });
-    ctx.reply("📸 Please send the screenshot proof for this task:");
-});
-
-bot.on('photo', async (ctx) => {
+// Rest of your logic (Profile, Balance, Affiliate) follows...
+bot.hears('👤 Profile', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
-    if (user.current_state && user.current_state.startsWith('upload_')) {
-        const taskId = user.current_state.split('_')[1];
-        const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-
-        for (const adminId of admins) {
-            await ctx.telegram.sendPhoto(adminId, fileId, {
-                caption: `📄 *New Proof*\nUser: \`${ctx.from.id}\`\nTask ID: ${taskId}`,
-                parse_mode: 'Markdown',
-                ...Markup.inlineKeyboard([
-                    [Markup.button.callback('✅ Approve', `admin_app_${taskId}_${ctx.from.id}`), 
-                     Markup.button.callback('❌ Reject', `admin_rej_${ctx.from.id}`)]
-                ])
-            });
-        }
-        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-        ctx.reply("✅ Proof submitted! Wait for admin review.");
-    }
+    ctx.replyWithMarkdown(`👤 *Profile*\nID: \`${ctx.from.id}\`\nBalance: ${user.balance.toFixed(2)} USDT`);
 });
 
-// --- 4. ADMIN APPROVAL LOGIC ---
-bot.action(/^admin_app_(.+)_(.+)$/, async (ctx) => {
-    const [taskId, userId] = [ctx.match[1], ctx.match[2]];
-    const task = await Task.findOne({ id: taskId });
-
-    await User.updateOne({ user_id: userId }, { 
-        $inc: { balance: task.reward, total_earned: task.reward },
-        $push: { completed_tasks: taskId }
-    });
-    
-    ctx.telegram.sendMessage(userId, `🎉 *Proof Approved!* You earned ${task.reward} USDT.`);
-    ctx.editMessageCaption(`✅ *Approved*\nUser ${userId} credited.`);
+bot.hears('💰 Balance', async (ctx) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    ctx.replyWithMarkdown(`💰 *Balance:* \`${user.balance.toFixed(4)}\` USDT`, Markup.inlineKeyboard([
+        [Markup.button.callback('⚗️ Withdraw', 'view_withdraw')]
+    ]));
 });
 
+bot.hears('💸 Earn More', (ctx) => {
+    ctx.reply("📂 *Select Category:*", Markup.inlineKeyboard([
+        [Markup.button.callback('📺 YouTube', 'cat_youtube'), Markup.button.callback('📢 Telegram', 'cat_telegram')],
+        [Markup.button.callback('🐦 Twitter (X)', 'cat_twitter')]
+    ]));
+});
+
+app.get('/', (req, res) => res.send('EMBT Online'));
 app.listen(process.env.PORT || 3000);
 bot.launch();
