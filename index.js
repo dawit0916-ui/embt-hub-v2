@@ -3,17 +3,15 @@ const mongoose = require('mongoose');
 const express = require('express');
 require('dotenv').config();
 
-// --- 1. INITIALIZE EXPRESS & BOT ---
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
 
-// --- 2. MONGODB CONNECTION ---
+// --- MONGODB ---
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log("✅ Cloud Brain Connected (MongoDB)"))
-    .catch(err => console.error("❌ DB Connection Error:", err));
+    .then(() => console.log("✅ Cloud Brain Connected"))
+    .catch(err => console.error("❌ DB Error:", err));
 
-// --- 3. DATABASE SCHEMAS ---
 const UserSchema = new mongoose.Schema({
     user_id: { type: Number, unique: true, required: true },
     balance: { type: Number, default: 0 },
@@ -21,14 +19,8 @@ const UserSchema = new mongoose.Schema({
     referredBy: Number,
     referralCount: { type: Number, default: 0 },
     completed_tasks: [String],
-    history: [{
-        type: String,
-        amount: String,
-        status: String,
-        date: { type: Date, default: Date.now }
-    }],
+    history: [{ type: {type: String}, amount: String, status: String, date: { type: Date, default: Date.now } }],
     red_flag: { type: Boolean, default: false },
-    penalty_due: { type: Number, default: 0 },
     current_state: String
 });
 
@@ -37,7 +29,7 @@ const TaskSchema = new mongoose.Schema({
     name: String,
     url: String,
     reward: Number,
-    type: String, // 'telegram', 'youtube', 'twitter'
+    type: String, 
     max_users: Number,
     completions: { type: Number, default: 0 },
     enabled: { type: Boolean, default: true }
@@ -46,105 +38,87 @@ const TaskSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 const Task = mongoose.model('Task', TaskSchema);
 
-// --- 4. KEYBOARDS ---
+// --- KEYBOARD ---
 const mainMenu = Markup.keyboard([
     ['📱 Open App', '💸 Earn More'],
     ['💰 Balance', '👤 Profile'],
     ['👥 Affiliate']
 ]).resize();
 
-// --- 5. BOT LOGIC (START & REFERRAL) ---
+// --- START ---
 bot.start(async (ctx) => {
-    const userId = ctx.from.id;
-    const referrerId = ctx.startPayload ? parseInt(ctx.startPayload) : null;
-    const refBonus = 0.20;
-
-    let user = await User.findOne({ user_id: userId });
-
+    let user = await User.findOne({ user_id: ctx.from.id });
     if (!user) {
-        user = new User({ user_id: userId });
+        user = new User({ user_id: ctx.from.id, referredBy: ctx.startPayload || null });
         await user.save();
-
-        if (referrerId && referrerId !== userId) {
-            await User.updateOne(
-                { user_id: referrerId },
-                { 
-                    $inc: { balance: refBonus, referralCount: 1 },
-                    $push: { history: { type: '👥 Referral', amount: `+${refBonus} USDT`, status: '✅ Completed' } }
-                }
-            );
-            ctx.telegram.sendMessage(referrerId, `🎊 *New Referral!* You earned ${refBonus} USDT.`, { parse_mode: 'Markdown' });
+        if (user.referredBy) {
+            await User.updateOne({ user_id: user.referredBy }, { $inc: { balance: 0.20, referralCount: 1 } });
         }
     }
-    ctx.replyWithMarkdown("👋 *Welcome back to EMBT Center!*", mainMenu);
+    ctx.replyWithMarkdown("👋 *Welcome to EMBT Center!*", mainMenu);
 });
 
-// --- 6. PENALTY SYSTEM ---
-bot.action('pay_penalty', async (ctx) => {
+// --- PROFILE BUTTON FIX ---
+bot.hears('👤 Profile', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
-    const penaltyAmount = 0.10;
-
-    if (user.balance < penaltyAmount) {
-        return ctx.answerCbQuery("❌ Insufficient balance to pay 0.10 USDT penalty.", { show_alert: true });
-    }
-
-    await User.updateOne(
-        { user_id: ctx.from.id },
-        { 
-            $inc: { balance: -penaltyAmount },
-            $set: { red_flag: false },
-            $push: { history: { type: '🚩 Penalty Paid', amount: `-${penaltyAmount} USDT`, status: '✅ Cleared' } }
-        }
-    );
-
-    ctx.editMessageText("✅ *Penalty Paid!* Your account is now clear and withdrawals are unlocked.", { parse_mode: 'Markdown' });
+    const msg = `👤 *Your Profile*\n\n` +
+                `🆔 ID: \`${ctx.from.id}\`\n` +
+                `🛡 Status: ${user.red_flag ? "🚩 Flagged" : "✅ Normal"}\n` +
+                `💰 Balance: ${user.balance.toFixed(2)} USDT`;
+    ctx.replyWithMarkdown(msg);
 });
 
-// --- 7. WITHDRAWAL LOGIC ---
-bot.hears('💰 Balance', async (ctx) => {
+// --- AFFILIATE BUTTON FIX ---
+bot.hears('👥 Affiliate', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
-    const msg = `💰 *Your Balance*\n\n` +
-                `💲 Current Balance: \`${user.balance.toFixed(4)}\` *USDT*\n` +
-                `💲 Total Earned: \`${user.total_earned.toFixed(4)}\` *USDT*\n\n` +
-                `📈 Keep completing tasks to increase your earnings.`;
+    const refLink = `https://t.me/${ctx.botInfo.username}?start=${ctx.from.id}`;
+    const msg = `👥 *Affiliate Program*\n\n` +
+                `Earn 0.20 USDT for every friend invited!\n\n` +
+                `📊 *Stats:*\n` +
+                `▪️ Total Invites: ${user.referralCount || 0}\n` +
+                `🔗 *Your Link:* \`${refLink}\``;
+    ctx.replyWithMarkdown(msg);
+});
 
-    ctx.replyWithMarkdown(msg, Markup.inlineKeyboard([
-        [Markup.button.callback('⚗️ Withdraw', 'view_withdraw')],
-        [Markup.button.callback('📜 History', 'view_history')]
+// --- EARN MORE BUTTON FIX ---
+bot.hears('💸 Earn More', (ctx) => {
+    ctx.reply("📂 *Select Category:*", Markup.inlineKeyboard([
+        [Markup.button.callback('📺 YouTube', 'cat_youtube'), Markup.button.callback('📢 Telegram', 'cat_telegram')],
+        [Markup.button.callback('🐦 Twitter (X)', 'cat_twitter')]
     ]));
 });
 
-bot.action('view_withdraw', async (ctx) => {
+// --- TASK LOADING LOGIC ---
+bot.action(/^cat_(.+)$/, async (ctx) => {
+    const platform = ctx.match[1];
     const user = await User.findOne({ user_id: ctx.from.id });
+    const tasks = await Task.find({ type: platform, enabled: true, id: { $nin: user.completed_tasks } });
+    
+    if (tasks.length === 0) return ctx.answerCbQuery("📌 No tasks available right now.", { show_alert: true });
 
-    if (user.red_flag) {
-        return ctx.replyWithMarkdown("🚩 *Withdrawal Locked!*\nYou left a channel. Pay 0.10 USDT penalty or rejoin to unlock.", 
-            Markup.inlineKeyboard([[Markup.button.callback('💳 Pay Penalty (0.10 USDT)', 'pay_penalty')]]));
-    }
-
-    if (user.balance < 1.0) {
-        return ctx.answerCbQuery("⚠️ Min withdrawal is 1.0 USDT.", { show_alert: true });
-    }
-
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_addr' });
-    ctx.reply("🏦 *Withdrawal Request*\nSend your USDT (BEP20) address:");
+    const buttons = tasks.map(t => [Markup.button.callback(`💰 ${t.name} (${t.reward} USDT)`, `view_task_${t.id}`)]);
+    ctx.editMessageText(`📌 *Available ${platform.toUpperCase()} Tasks*`, Markup.inlineKeyboard(buttons));
 });
 
-// --- 8. ADMIN /add COMMAND ---
+// --- BALANCE BUTTON (KEEPING IT WORKING) ---
+bot.hears('💰 Balance', async (ctx) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    ctx.replyWithMarkdown(`💰 *Balance:* \`${user.balance.toFixed(4)}\` USDT`, Markup.inlineKeyboard([
+        [Markup.button.callback('⚗️ Withdraw', 'view_withdraw')]
+    ]));
+});
+
+// --- ADMIN /add COMMAND ---
 bot.command('add', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return;
-    const input = ctx.message.text.split('/add ')[1];
-    if (!input || input.split('|').length < 5) return ctx.reply("Format: Name | Link | Reward | Type | MaxUsers");
-
-    const [name, url, reward, type, maxUsers] = input.split('|').map(i => i.trim());
-    const newTask = new Task({ id: 'task_' + Date.now(), name, url, reward, type, max_users: maxUsers });
+    const parts = ctx.message.text.split('/add ')[1]?.split('|').map(i => i.trim());
+    if (!parts || parts.length < 5) return ctx.reply("Format: Name|Link|Reward|Type|MaxUsers");
+    
+    const newTask = new Task({ id: 't' + Date.now(), name: parts[0], url: parts[1], reward: parseFloat(parts[2]), type: parts[3], max_users: parseInt(parts[4]) });
     await newTask.save();
-    ctx.reply("✅ Task Added Successfully!");
+    ctx.reply("✅ Task Added!");
 });
 
-// --- 9. RENDER ENGINE ---
 app.get('/', (req, res) => res.send('EMBT Online'));
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
+app.listen(process.env.PORT || 3000);
 bot.launch();
