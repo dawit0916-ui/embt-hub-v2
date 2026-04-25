@@ -19,7 +19,7 @@ const UserSchema = new mongoose.Schema({
     referredBy: Number,
     referralCount: { type: Number, default: 0 },
     completed_tasks: [String],
-    history: [{ type: {type: String}, amount: String, status: String, date: { type: Date, default: Date.now } }],
+    history: [{ type: Object, date: { type: Date, default: Date.now } }],
     red_flag: { type: Boolean, default: false },
     current_state: String
 });
@@ -55,32 +55,52 @@ bot.start(async (ctx) => {
             await User.updateOne({ user_id: user.referredBy }, { $inc: { balance: 0.20, referralCount: 1 } });
         }
     }
-    ctx.replyWithMarkdown("👋 *Welcome to EMBT Center!*", mainMenu);
+    ctx.replyWithMarkdown("👋 *Welcome back to EMBT Center!*", mainMenu);
 });
 
-// --- PROFILE BUTTON FIX ---
+// --- PROFILE ---
 bot.hears('👤 Profile', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
-    const msg = `👤 *Your Profile*\n\n` +
+    const msg = `👤 *Profile Details*\n\n` +
                 `🆔 ID: \`${ctx.from.id}\`\n` +
-                `🛡 Status: ${user.red_flag ? "🚩 Flagged" : "✅ Normal"}\n` +
-                `💰 Balance: ${user.balance.toFixed(2)} USDT`;
+                `🛡 Status: ${user.red_flag ? "🚩 Flagged" : "✅ Verified"}\n` +
+                `💰 Balance: \`${user.balance.toFixed(2)}\` USDT`;
     ctx.replyWithMarkdown(msg);
 });
 
-// --- AFFILIATE BUTTON FIX ---
+// --- AFFILIATE WITH SHARE BUTTON ---
 bot.hears('👥 Affiliate', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
     const refLink = `https://t.me/${ctx.botInfo.username}?start=${ctx.from.id}`;
-    const msg = `👥 *Affiliate Program*\n\n` +
-                `Earn 0.20 USDT for every friend invited!\n\n` +
-                `📊 *Stats:*\n` +
-                `▪️ Total Invites: ${user.referralCount || 0}\n` +
-                `🔗 *Your Link:* \`${refLink}\``;
-    ctx.replyWithMarkdown(msg);
+    
+    const msg = "👥 *Affiliate Program*\n\n" +
+                "Invite your friends and earn rewards for every active user you bring!\n\n" +
+                "📊 *Your Stats:*\n" +
+                "▪️ Total Referrals: " + (user.referralCount || 0) + " users\n" +
+                "▪️ Referral Earnings: " + ((user.referralCount || 0) * 0.20).toFixed(2) + " *USDT*\n\n" +
+                "🔗 *Your Referral Link:*\n`" + refLink + "`";
+
+    ctx.replyWithMarkdown(msg, Markup.inlineKeyboard([
+        [Markup.button.url('📢 Share Link', `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent('Join EMBT and earn USDT!')}`)]
+    ]));
 });
 
-// --- EARN MORE BUTTON FIX ---
+// --- IMPROVED BALANCE VISUAL ---
+bot.hears('💰 Balance', async (ctx) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    const balanceMessage =
+        "💰 *Your Balance*\n\n" +
+        "💲 Current Balance: `" + user.balance.toFixed(4) + "` *$USDT*\n" +
+        "💲 Total Earned : `" + (user.total_earned || user.balance).toFixed(4) + "` *$USDT*\n\n" +
+        "📈 *Keep completing tasks to increase your earnings.*";
+
+    ctx.replyWithMarkdown(balanceMessage, Markup.inlineKeyboard([
+        [Markup.button.callback('⚗️ Withdraw', 'view_withdraw')],
+        [Markup.button.callback('📜 History', 'view_history')]
+    ]));
+});
+
+// --- EARN MORE ---
 bot.hears('💸 Earn More', (ctx) => {
     ctx.reply("📂 *Select Category:*", Markup.inlineKeyboard([
         [Markup.button.callback('📺 YouTube', 'cat_youtube'), Markup.button.callback('📢 Telegram', 'cat_telegram')],
@@ -88,35 +108,25 @@ bot.hears('💸 Earn More', (ctx) => {
     ]));
 });
 
-// --- TASK LOADING LOGIC ---
+// --- TASK LIST HANDLER ---
 bot.action(/^cat_(.+)$/, async (ctx) => {
     const platform = ctx.match[1];
     const user = await User.findOne({ user_id: ctx.from.id });
-    const tasks = await Task.find({ type: platform, enabled: true, id: { $nin: user.completed_tasks } });
+    const tasks = await Task.find({ 
+        type: platform, 
+        enabled: true, 
+        id: { $nin: user.completed_tasks } 
+    });
     
-    if (tasks.length === 0) return ctx.answerCbQuery("📌 No tasks available right now.", { show_alert: true });
+    if (tasks.length === 0) return ctx.answerCbQuery("📌 No tasks available in " + platform.toUpperCase(), { show_alert: true });
 
-    const buttons = tasks.map(t => [Markup.button.callback(`💰 ${t.name} (${t.reward} USDT)`, `view_task_${t.id}`)]);
+    const buttons = tasks.map(t => [
+        Markup.button.callback(`💰 ${t.name} (${t.reward} USDT)`, `view_task_${t.id}`)
+    ]);
+    
+    buttons.push([Markup.button.callback('⬅️ Back', 'earn_more_menu')]);
+
     ctx.editMessageText(`📌 *Available ${platform.toUpperCase()} Tasks*`, Markup.inlineKeyboard(buttons));
-});
-
-// --- BALANCE BUTTON (KEEPING IT WORKING) ---
-bot.hears('💰 Balance', async (ctx) => {
-    const user = await User.findOne({ user_id: ctx.from.id });
-    ctx.replyWithMarkdown(`💰 *Balance:* \`${user.balance.toFixed(4)}\` USDT`, Markup.inlineKeyboard([
-        [Markup.button.callback('⚗️ Withdraw', 'view_withdraw')]
-    ]));
-});
-
-// --- ADMIN /add COMMAND ---
-bot.command('add', async (ctx) => {
-    if (!admins.includes(ctx.from.id)) return;
-    const parts = ctx.message.text.split('/add ')[1]?.split('|').map(i => i.trim());
-    if (!parts || parts.length < 5) return ctx.reply("Format: Name|Link|Reward|Type|MaxUsers");
-    
-    const newTask = new Task({ id: 't' + Date.now(), name: parts[0], url: parts[1], reward: parseFloat(parts[2]), type: parts[3], max_users: parseInt(parts[4]) });
-    await newTask.save();
-    ctx.reply("✅ Task Added!");
 });
 
 app.get('/', (req, res) => res.send('EMBT Online'));
