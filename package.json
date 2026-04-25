@@ -1,0 +1,16 @@
+{
+  "name": "embt-hub-v2",
+  "version": "1.0.0",
+  "description": "EMBT 3-Bot Ecosystem Gateway",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "mongoose": "^8.3.2",
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  }
+}
