@@ -35,7 +35,95 @@ const Task = mongoose.model('Task', new mongoose.Schema({
 }));
 
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
+// --- 1. AFFILIATE SYSTEM ---
+bot.hears('👥 Affiliate', async (ctx) => {
+    try {
+        const user = await User.findOne({ user_id: ctx.from.id });
+        const botUsername = ctx.botInfo.username;
+        const refLink = `https://t.me/${botUsername}?start=${ctx.from.id}`;
+        
+        // Referral Reward Configuration
+        const rewardPerRef = 0.20; 
+        const totalEarnings = (user.referralCount || 0) * rewardPerRef;
 
+        const msg = 
+            "👥 *Affiliate Program*\n\n" +
+            "Invite your friends and earn rewards for every new user!\n\n" +
+            "📊 *Your Statistics:*\n" +
+            `▪️ Total Referrals: \`${user.referralCount || 0}\` users\n` +
+            `▪️ Referral Earnings: \`${totalEarnings.toFixed(2)}\` *USDT*\n\n` +
+            "🔗 *Your Referral Link:*\n" +
+            `\`${refLink}\``;
+
+        // Share button opens the Telegram share interface automatically
+        const affiliateButtons = Markup.inlineKeyboard([
+            [Markup.button.url('📢 Share Link', `https://t.me/share/url?url=${encodeURIComponent(refLink)}&text=${encodeURIComponent('Join EMBT and earn USDT by completing simple tasks! 💸')}`)]
+        ]);
+
+        ctx.replyWithMarkdown(msg, affiliateButtons);
+    } catch (e) {
+        console.error("Affiliate Error:", e);
+        ctx.reply("⚠️ Error loading affiliate data. Try /start");
+    }
+});
+
+// --- 2. EARN MORE (CATEGORY MENU) ---
+bot.hears('💸 Earn More', (ctx) => {
+    const msg = "📂 *Select a Task Category:*\n\nComplete tasks below to increase your balance.";
+    
+    const categoryButtons = Markup.inlineKeyboard([
+        [
+            Markup.button.callback('📺 YouTube', 'cat_youtube'),
+            Markup.button.callback('📢 Telegram', 'cat_telegram')
+        ],
+        [
+            Markup.button.callback('🐦 Twitter (X)', 'cat_twitter'),
+            Markup.button.callback('🌐 Others', 'cat_other')
+        ]
+    ]);
+
+    ctx.replyWithMarkdown(msg, categoryButtons);
+});
+
+// --- 3. DYNAMIC TASK LOADER ---
+bot.action(/^cat_(.+)$/, async (ctx) => {
+    try {
+        const platform = ctx.match[1];
+        const user = await User.findOne({ user_id: ctx.from.id });
+        
+        // Find tasks for this platform that the user HAS NOT completed yet
+        const tasks = await Task.find({ 
+            type: platform, 
+            id: { $nin: user.completed_tasks } 
+        }).limit(10); // Limit to 10 at a time to keep it fast
+
+        if (tasks.length === 0) {
+            return ctx.answerCbQuery(`📌 No new ${platform} tasks available right now.`, { show_alert: true });
+        }
+
+        const buttons = tasks.map(t => [
+            Markup.button.callback(`💰 ${t.name} (${t.reward} USDT)`, `view_task_${t.id}`)
+        ]);
+        
+        buttons.push([Markup.button.callback('⬅️ Back to Categories', 'back_to_earn')]);
+
+        ctx.editMessageText(`📌 *Available ${platform.toUpperCase()} Tasks*`, {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+        });
+    } catch (e) {
+        console.error("Task Loading Error:", e);
+        ctx.answerCbQuery("⚠️ Error loading tasks.");
+    }
+});
+
+// Back to Category Menu Handler
+bot.action('back_to_earn', (ctx) => {
+    ctx.editMessageText("📂 *Select a Task Category:*", Markup.inlineKeyboard([
+        [Markup.button.callback('📺 YouTube', 'cat_youtube'), Markup.button.callback('📢 Telegram', 'cat_telegram')],
+        [Markup.button.callback('🐦 Twitter (X)', 'cat_twitter'), Markup.button.callback('🌐 Others', 'cat_other')]
+    ]));
+});
 // --- 2. START & RECOVERY ---
 bot.start(async (ctx) => {
     let user = await User.findOne({ user_id: ctx.from.id });
@@ -241,12 +329,7 @@ bot.on('text', async (ctx) => {
         ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
     }
 });
-bot.hears('💸 Earn More', (ctx) => {
-    ctx.reply("📂 *Select Category:*", Markup.inlineKeyboard([
-        [Markup.button.callback('📺 YouTube', 'cat_youtube'), Markup.button.callback('📢 Telegram', 'cat_telegram')],
-        [Markup.button.callback('🐦 Twitter (X)', 'cat_twitter')]
-    ]));
-});
+
 bot.action('view_history', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
     if (!user.history || user.history.length === 0) {
