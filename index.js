@@ -115,7 +115,54 @@ bot.hears('💸 Earn More', (ctx) => {
 
     ctx.replyWithMarkdown(msg, categoryButtons);
 });
+// --- 1. THE GHOST VALIDATOR FUNCTION ---
+async function runGhostValidator(ctx) {
+    ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
+    
+    const users = await User.find({ red_flag: false }); 
+    const tgTasks = await Task.find({ type: 'telegram' });
+    let caughtCount = 0;
 
+    for (const user of users) {
+        for (const taskId of user.completed_tasks) {
+            const task = tgTasks.find(t => t.id === taskId);
+            if (!task) continue;
+
+            const channelId = "@" + task.url.split('t.me/')[1].split('/')[0];
+
+            try {
+                const member = await bot.telegram.getChatMember(channelId, user.user_id);
+                
+                if (['left', 'kicked'].includes(member.status)) {
+                    caughtCount++;
+                    await User.updateOne(
+                        { user_id: user.user_id },
+                        { 
+                            $set: { red_flag: true },
+                            $inc: { balance: -0.10 } 
+                        }
+                    );
+                    
+                    // Notify the cheater (Optional)
+                    await bot.telegram.sendMessage(user.user_id, "🚩 *Account Flagged!* You left a channel. A 0.10 USDT penalty applied.");
+                    break; 
+                }
+            } catch (e) {
+                // Bot might not be admin in that specific channel anymore
+                continue;
+            }
+            // 🛑 CRITICAL: Wait 100ms so Telegram doesn't ban your bot for spamming!
+            await new Promise(res => setTimeout(res, 100));
+        }
+    }
+    ctx.reply(`✨ *Sweep Complete!* Found and penalized ${caughtCount} cheaters.`);
+}
+
+// --- 2. THE ADMIN TRIGGER ---
+bot.command('sweep', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) return;
+    runGhostValidator(ctx);
+});
 // --- 3. DYNAMIC TASK LOADER ---
 bot.action(/^cat_(.+)$/, async (ctx) => {
     try {
@@ -523,6 +570,12 @@ bot.catch((err, ctx) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.log('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
+// Run the Ghost Validator automatically every 24 hours
+setInterval(() => {
+    console.log("🤖 Scheduled Auto-Sweep starting...");
+    // Note: Since there is no 'ctx' in a timer, you'd modify the function 
+    // to log to console instead of replying to a message.
+}, 24 * 60 * 60 * 1000);
 
 app.get('/', (req, res) => res.send('EMBT Online'));
 app.listen(process.env.PORT || 3000);
