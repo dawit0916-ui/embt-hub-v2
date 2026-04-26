@@ -47,8 +47,8 @@ bot.hears('👥 Affiliate', async (ctx) => {
         const totalEarnings = (user.referralCount || 0) * rewardPerRef;
 
         const msg = 
-            "👥 *Affiliate Program*\n\n" +
-            "Invite your friends and earn rewards for every new user!\n\n" +
+            "👥 *Affiliate Program*🎁\n\n" +
+            "🎁Invite your friends and earn rewards for every new user!🎁\n\n" +
             "📊 *Your Statistics:*\n" +
             `▪️ Total Referrals: \`${user.referralCount || 0}\` users\n` +
             `▪️ Referral Earnings: \`${totalEarnings.toFixed(2)}\` *USDT*\n\n` +
@@ -221,7 +221,7 @@ bot.action(/^view_task_(.+)$/, async (ctx) => {
     const task = await Task.findOne({ id: taskId });
     if (!task) return ctx.answerCbQuery("❌ Task expired.");
 
-    const msg = `📝 *Task:* ${task.name}\n💰 *Reward:* ${task.reward} USDT\n🆔 *ID:* \`${task.id}\``;
+    const msg = `📝 *Task:* ${task.name}\n💰 *Reward:* ${task.reward} USDT\``;
     const buttons = [[Markup.button.url('🔗 Go to Task', task.url)]];
     
     if (task.type === 'telegram') buttons.push([Markup.button.callback('✅ Verify Join', `verify_tg_${taskId}`)]);
