@@ -217,17 +217,40 @@ bot.command('add', async (ctx) => {
 
 // --- 6. VIEW TASK DETAILS (REFIXED) ---
 bot.action(/^view_task_(.+)$/, async (ctx) => {
-    const taskId = ctx.match[1];
-    const task = await Task.findOne({ id: taskId });
-    if (!task) return ctx.answerCbQuery("❌ Task expired.");
+    try {
+        const taskId = ctx.match[1];
+        const task = await Task.findOne({ id: taskId });
+        
+        if (!task) return ctx.answerCbQuery("❌ Task expired or not found.");
 
-    const msg = `📝 *Task:* ${task.name}\n💰 *Reward:* ${task.reward} USDT\``;
-    const buttons = [[Markup.button.url('🔗 Go to Task', task.url)]];
-    
-    if (task.type === 'telegram') buttons.push([Markup.button.callback('✅ Verify Join', `verify_tg_${taskId}`)]);
-    else buttons.push([Markup.button.callback('📸 Upload Screenshot', `upload_proof_${taskId}`)]);
-    
-    ctx.editMessageText(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+        // Clean message layout for the user
+        const msg = 
+            `📝 *Task:* ${task.name}\n` +
+            `💰 *Reward:* ${task.reward.toFixed(2)} USDT\n\n` +
+            `1️⃣ Click the button below to perform the task.\n` +
+            `2️⃣ Return here and click "Verify" to earn your reward.`;
+
+        const buttons = [[Markup.button.url('🔗 Go to Task', task.url)]];
+        
+        // Logic for verification type
+        if (task.type === 'telegram') {
+            buttons.push([Markup.button.callback('✅ Verify Join', `verify_tg_${taskId}`)]);
+        } else {
+            buttons.push([Markup.button.callback('📸 Upload Screenshot', `upload_proof_${taskId}`)]);
+        }
+        
+        // Added a back button so users can return to the list
+        buttons.push([Markup.button.callback('⬅️ Back to Tasks', `cat_${task.type}`)]);
+        
+        ctx.editMessageText(msg, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
+        });
+
+    } catch (error) {
+        console.error("View Task Error:", error);
+        ctx.answerCbQuery("⚠️ Error loading task details.");
+    }
 });
 
 // Rest of your logic (Profile, Balance, Affiliate) follows...
@@ -368,6 +391,80 @@ bot.action('view_history', async (ctx) => {
     }
     // Logic to show history goes here
     ctx.answerCbQuery("Coming soon!"); 
+});
+bot.action(/^upload_proof_(.+)$/, async (ctx) => {
+    try {
+        const taskId = ctx.match[1];
+        
+        // Update user state to 'uploading_proof' and store the Task ID
+        await User.updateOne(
+            { user_id: ctx.from.id }, 
+            { $set: { current_state: `uploading_${taskId}` } }
+        );
+
+        ctx.reply("📸 *Screenshot Proof Required*\n\nPlease send the screenshot showing you completed the task. \n\n_Note: Sending fake proofs will result in a 0.10 USDT penalty._", { parse_mode: 'Markdown' });
+    } catch (e) {
+        ctx.answerCbQuery("⚠️ Error starting upload.");
+    }
+});
+bot.on('photo', async (ctx) => {
+    try {
+        const user = await User.findOne({ user_id: ctx.from.id });
+
+        // Check if the user was actually supposed to send a proof
+        if (user && user.current_state && user.current_state.startsWith('uploading_')) {
+            const taskId = user.current_state.split('_')[1];
+            const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+
+            // 1. Notify the User
+            ctx.reply("✅ *Proof Received!*\nYour screenshot has been sent to the admins for review. You will be notified once it is approved.", { parse_mode: 'Markdown' });
+
+            // 2. Clear user state so they don't accidentally send more photos
+            await User.updateOne({ user_id: ctx.from.id }, { $set: { current_state: null } });
+
+            // 3. Send to ALL Admins
+            for (const adminId of admins) {
+                await ctx.telegram.sendPhoto(adminId, fileId, {
+                    caption: `📄 *New Task Proof*\n\n👤 *User:* \`${ctx.from.id}\`\n🆔 *Task ID:* \`${taskId}\`\n\nReview this screenshot and select an action:`,
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard([
+                        [
+                            Markup.button.callback('✅ Approve', `admin_app_${taskId}_${ctx.from.id}`),
+                            Markup.button.callback('❌ Reject', `admin_rej_${ctx.from.id}`)
+                        ]
+                    ])
+                });
+            }
+        }
+    } catch (e) {
+        console.error("Photo Handling Error:", e);
+    }
+});
+bot.action(/^admin_app_(.+)_(.+)$/, async (ctx) => {
+    const [taskId, userId] = [ctx.match[1], ctx.match[2]];
+    
+    try {
+        const task = await Task.findOne({ id: taskId });
+        if (!task) return ctx.editMessageCaption("❌ Error: Task no longer exists.");
+
+        // Update User Balance & Mark Task as Completed
+        await User.updateOne(
+            { user_id: userId },
+            { 
+                $inc: { balance: task.reward, total_earned: task.reward },
+                $push: { completed_tasks: taskId }
+            }
+        );
+
+        // Notify the User
+        await ctx.telegram.sendMessage(userId, `🎉 *Proof Approved!*\nYou earned **${task.reward.toFixed(2)} USDT** for completing: _${task.name}_`, { parse_mode: 'Markdown' });
+
+        // Update the Admin Message so you don't approve it twice
+        ctx.editMessageCaption(`✅ *Approved & Paid*\nUser: \`${userId}\` received ${task.reward} USDT.`);
+        
+    } catch (e) {
+        ctx.reply("❌ Error processing approval.");
+    }
 });
 // --- PENALTY PAYMENT HANDLER ---
 bot.action('pay_penalty', async (ctx) => {
