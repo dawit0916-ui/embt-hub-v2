@@ -66,6 +66,41 @@ bot.hears('👥 Affiliate', async (ctx) => {
         ctx.reply("⚠️ Error loading affiliate data. Try /start");
     }
 });
+// --- THE SPAM SHIELD (RATE LIMITER) ---
+const userCooldowns = new Map();
+const COOLDOWN_MS = 1500; // 1.5 seconds between clicks
+
+bot.use(async (ctx, next) => {
+    // We only care about messages or button clicks (callback_query)
+    const userId = ctx.from?.id;
+    if (!userId) return next();
+
+    const now = Date.now();
+    const lastSeen = userCooldowns.get(userId) || 0;
+
+    if (now - lastSeen < COOLDOWN_MS) {
+        // Option 1: Silent Ignore (Best for 10k+ users to save resources)
+        return; 
+        
+        /* Option 2: Send a warning (Use carefully, can increase server load)
+        if (now - lastSeen < 500) { // Only warn if they are really spamming
+             return ctx.answerCbQuery("⚠️ Slow down! Wait a second.", { show_alert: true });
+        }
+        */
+    }
+
+    // Update the timestamp and let the message through
+    userCooldowns.set(userId, now);
+    return next();
+});
+
+// Clear the Map occasionally to keep RAM low (for 10k users)
+setInterval(() => {
+    const now = Date.now();
+    for (const [userId, lastSeen] of userCooldowns.entries()) {
+        if (now - lastSeen > 60000) userCooldowns.delete(userId); // Remove users inactive for 1 minute
+    }
+}, 60000); // Run cleanup every minute
 bot.action(/^verify_tg_(.+)$/, async (ctx) => {
     const taskId = ctx.match[1];
     const task = await Task.findOne({ id: taskId });
@@ -138,13 +173,12 @@ async function runGhostValidator(ctx) {
                     await User.updateOne(
                         { user_id: user.user_id },
                         { 
-                            $set: { red_flag: true },
-                            $inc: { balance: -0.10 } 
+                            $set: { red_flag: true }
                         }
                     );
                     
                     // Notify the cheater (Optional)
-                    await bot.telegram.sendMessage(user.user_id, "🚩 *Account Flagged!* You left a channel. A 0.10 USDT penalty applied.");
+                    await bot.telegram.sendMessage(user.user_id, "🚩 *Account Flagged!* You left a channel. The 0.10 USDT penalty will be applied.");
                     break; 
                 }
             } catch (e) {
@@ -302,8 +336,72 @@ bot.action(/^view_task_(.+)$/, async (ctx) => {
 
 // Rest of your logic (Profile, Balance, Affiliate) follows...
 bot.hears('👤 Profile', async (ctx) => {
-    const user = await User.findOne({ user_id: ctx.from.id });
-    ctx.replyWithMarkdown(`👤 *Profile*\nID: \`${ctx.from.id}\`\nBalance: ${user.balance.toFixed(2)} USDT`);
+    try {
+        const user = await User.findOne({ user_id: ctx.from.id });
+
+        if (!user) {
+            return ctx.reply("❌ Profile not found. Please type /start to register.");
+        }
+
+        // Determine Account Status
+        const status = user.red_flag ? "🚩 Flagged (Penalty Due)" : "✅ Active / Professional";
+        
+        // Calculate Task Completion count
+        const tasksDone = user.completed_tasks ? user.completed_tasks.length : 0;
+
+        const profileMsg = 
+            `👤 *USER DASHBOARD*\n` +
+            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `🆔 *User ID:* \`${user.user_id}\`\n` +
+            `🛡 *Status:* ${status}\n\n` +
+            `💰 *Current Balance:* \`${user.balance.toFixed(4)}\` USDT\n` +
+            `📈 *Total Earned:* \`${user.total_earned.toFixed(4)}\` USDT\n\n` +
+            `👥 *Referrals:* \`${user.referralCount || 0}\` users\n` +
+            `✅ *Tasks Completed:* \`${tasksDone}\` tasks\n\n` +
+            `📅 *Member Since:* _Verified User_`;
+
+        const profileButtons = Markup.inlineKeyboard([
+            [Markup.button.callback('🔄 Refresh Data', 'refresh_profile')],
+            [Markup.button.callback('📜 Transaction History', 'view_history')]
+        ]);
+
+        ctx.replyWithMarkdown(profileMsg, profileButtons);
+
+    } catch (error) {
+        console.error("Profile Error:", error);
+        ctx.reply("⚠️ Error loading profile. Try /fix");
+    }
+});
+
+// --- REFRESH BUTTON HANDLER ---
+bot.action('refresh_profile', async (ctx) => {
+    // This just re-triggers the profile view with updated data
+    try {
+        const user = await User.findOne({ user_id: ctx.from.id });
+        const status = user.red_flag ? "🚩 Flagged" : "✅ Active";
+        const tasksDone = user.completed_tasks ? user.completed_tasks.length : 0;
+
+        const updatedMsg = 
+            `👤 *USER DASHBOARD (Updated)*\n` +
+            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `🆔 *User ID:* \`${user.user_id}\`\n` +
+            `🛡 *Status:* ${status}\n\n` +
+            `💰 *Current Balance:* \`${user.balance.toFixed(4)}\` USDT\n` +
+            `📈 *Total Earned:* \`${user.total_earned.toFixed(4)}\` USDT\n\n` +
+            `👥 *Referrals:* \`${user.referralCount || 0}\` users\n` +
+            `✅ *Tasks Completed:* \`${tasksDone}\` tasks`;
+
+        await ctx.editMessageText(updatedMsg, {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔄 Refresh Data', 'refresh_profile')],
+                [Markup.button.callback('📜 Transaction History', 'view_history')]
+            ])
+        });
+        ctx.answerCbQuery("✨ Profile Updated");
+    } catch (e) {
+        ctx.answerCbQuery("❌ Update failed.");
+    }
 });
 bot.hears('💰 Balance', async (ctx) => {
     try {
@@ -487,6 +585,64 @@ bot.on('photo', async (ctx) => {
         console.error("Photo Handling Error:", e);
     }
 });
+bot.command('pending', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) return;
+
+    try {
+        // Find users who have at least one '⏳ Pending' item in their history
+        const pendingUsers = await User.find({ 
+            "history.status": "⏳ Pending" 
+        }).limit(10); // Show 10 at a time
+
+        if (pendingUsers.length === 0) {
+            return ctx.reply("✅ *No pending withdrawals!* All users have been paid.");
+        }
+
+        let report = "📂 *Pending Payouts (Oldest 10)*\n\n";
+        const buttons = [];
+
+        pendingUsers.forEach(user => {
+            // Find the specific pending record in the user's history
+            const request = user.history.find(h => h.status === "⏳ Pending");
+            
+            if (request) {
+                report += `👤 *User:* \`${user.user_id}\`\n💰 *Amount:* ${request.amount}\n🏦 *Wallet:* \`${request.address}\`\n\n`;
+                
+                // Button to quickly mark as paid
+                buttons.push([
+                    Markup.button.callback(`✅ Pay ${user.user_id}`, `admin_paid_${user.user_id}_${request.id}`)
+                ]);
+            }
+        });
+
+        ctx.replyWithMarkdown(report, Markup.inlineKeyboard(buttons));
+
+    } catch (error) {
+        console.error("Dashboard Error:", error);
+        ctx.reply("❌ Error loading dashboard.");
+    }
+});
+bot.action(/^admin_paid_(.+)_(.+)$/, async (ctx) => {
+    const [userId, transId] = [ctx.match[1], ctx.match[2]];
+
+    try {
+        // 1. Update the user's history item status to '✅ Completed'
+        await User.updateOne(
+            { user_id: userId, "history.id": transId },
+            { $set: { "history.$.status": "✅ Completed" } }
+        );
+
+        // 2. Notify the user
+        await ctx.telegram.sendMessage(userId, "🎁 *Payout Confirmed!*\n\nYour withdrawal has been processed. Check your wallet!", { parse_mode: 'Markdown' });
+
+        // 3. Update the admin dashboard message
+        ctx.editMessageText(`✅ *Success!*\nUser \`${userId}\` has been marked as paid. Type /pending to see the next one.`);
+
+    } catch (e) {
+        ctx.answerCbQuery("❌ Error processing payout.");
+    }
+});
+
 bot.action(/^admin_app_(.+)_(.+)$/, async (ctx) => {
     const [taskId, userId] = [ctx.match[1], ctx.match[2]];
     
@@ -511,6 +667,34 @@ bot.action(/^admin_app_(.+)_(.+)$/, async (ctx) => {
         
     } catch (e) {
         ctx.reply("❌ Error processing approval.");
+    }
+});
+// --- ADMIN REJECTION LOGIC ---
+bot.action(/^admin_rej_(.+)_(.+)$/, async (ctx) => {
+    const [taskId, userId] = [ctx.match[1], ctx.match[2]];
+    
+    try {
+        const task = await Task.findOne({ id: taskId });
+        const taskName = task ? task.name : "Task";
+
+        // 1. Notify the User
+        await ctx.telegram.sendMessage(userId, 
+            `❌ *Proof Rejected*\n\n` +
+            `Your proof for the task *${taskName}* was rejected by the admin.\n\n` +
+            `💡 *Possible reasons:*\n` +
+            `• Low quality screenshot\n` +
+            `• Proof does not show completion\n` +
+            `• Already submitted this proof before\n\n` +
+            `Please try again with a valid screenshot!`, 
+            { parse_mode: 'Markdown' }
+        );
+
+        // 2. Update the Admin Chat Visuals
+        ctx.editMessageCaption(`❌ *Rejected*\n\nUser \`${userId}\` has been notified that their proof was invalid.`, { parse_mode: 'Markdown' });
+
+    } catch (e) {
+        console.error("Rejection Error:", e);
+        ctx.answerCbQuery("⚠️ Error notifying user.");
     }
 });
 // --- PENALTY PAYMENT HANDLER ---
