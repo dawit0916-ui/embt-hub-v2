@@ -79,23 +79,24 @@ bot.hears('👥 Affiliate', async (ctx) => {
 });
 bot.action('admin_main', async (ctx) => {
     try {
+        // 1. CLEAR THE STATE (This is the "Cancel" magic)
+        await User.updateOne({ user_id: ctx.from.id }, { $set: { current_state: null } });
+
         const adminMenu = Markup.inlineKeyboard([
             [Markup.button.callback('📊 Stats', 'admin_stats'), Markup.button.callback('💸 Payouts', 'admin_pending')],
             [Markup.button.callback('📋 Task Management', 'admin_tasks'), Markup.button.callback('⚙️ Bot Settings', 'admin_settings')],
             [Markup.button.callback('🚩 Security', 'admin_security'), Markup.button.callback('📢 Broadcast', 'admin_broadcast')]
         ]);
-        await User.updateOne({ user_id: ctx.from.id }, { $set: { current_state: null } });
-        // Using editMessageText makes the transition smooth
+
         await ctx.editMessageText("🛠 *EMBT Admin Control Center*\nSelect a category to manage your bot:", { 
             parse_mode: 'Markdown', 
             ...adminMenu 
         });
         
-        // Optional: Answer callback to remove the "loading" state on the button
-        ctx.answerCbQuery();
+        ctx.answerCbQuery("❌ Action Cancelled");
     } catch (error) {
         console.error("Admin Main Error:", error);
-        ctx.answerCbQuery("❌ Error returning to main menu.");
+        ctx.answerCbQuery("❌ Error.");
     }
 });
 // --- THE SPAM SHIELD (RATE LIMITER) ---
@@ -312,6 +313,27 @@ bot.action('admin_security', async (ctx) => {
     ];
 
     ctx.editMessageText(securityMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+});
+// --- HELPER: FUNCTION TO SHOW CANCEL BUTTON ---
+const showCancelBtn = async (ctx, text) => {
+    await ctx.editMessageText(text, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+            [Markup.button.callback('❌ Cancel & Return', 'admin_main')]
+        ])
+    });
+};
+
+// --- UPDATE SETTINGS ACTION ---
+bot.action('set_penalty', async (ctx) => {
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_penalty_val' });
+    await showCancelBtn(ctx, "🔢 *Enter new Penalty Fee:* (e.g., 0.15)\n\n_Or click below to cancel._");
+});
+
+// --- UPDATE BROADCAST ACTION ---
+bot.action('admin_broadcast', async (ctx) => {
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_broadcast' });
+    await showCancelBtn(ctx, "📢 *Send your broadcast message:*\n\nType your message now. Every user will receive this.\n\n_Click below to cancel._");
 });
 
 // Toggle Withdrawal Logic
