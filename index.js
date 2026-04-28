@@ -177,14 +177,29 @@ async function runGhostValidator(ctx) {
             try {
                 const member = await bot.telegram.getChatMember(channelId, user.user_id);
                 
-                if (['left', 'kicked'].includes(member.status)) {
-                    caughtCount++;
-                    await User.updateOne(
-                        { user_id: user.user_id },
-                        { 
-                            $set: { red_flag: true }
-                        }
-                    );
+                // --- UPDATED CHEATER DETECTION ---
+if (['left', 'kicked'].includes(member.status)) {
+    console.log(`🚩 Caught: User ${user.user_id} left ${channelId}`);
+    
+    await User.updateOne(
+        { user_id: user.user_id },
+        { 
+            $set: { red_flag: true },
+            $inc: { balance: -0.10 }, // Apply penalty
+            $pull: { completed_tasks: taskId } // 🔄 REMOVE task from completed list
+        }
+    );
+    
+    // Notify the user they have to redo the work
+    await bot.telegram.sendMessage(user.user_id, 
+        `🚩 *Penalty Applied!*\n\n` +
+        `You left the channel for task: *${task.name}*.\n` +
+        `• 0.10 USDT has been deducted.\n` +
+        `• The task has been added back to your list.\n\n` +
+        `💡 *Re-join the channel and re-submit proof to clear your flag!*`, 
+        { parse_mode: 'Markdown' }
+    );
+}
                     
                     // Notify the cheater (Optional)
                     await bot.telegram.sendMessage(user.user_id, "🚩 *Account Flagged!* You left a channel. The 0.10 USDT penalty will be applied.");
