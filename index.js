@@ -27,9 +27,11 @@ const User = mongoose.model('User', new mongoose.Schema({
     completed_tasks: [String],
     min_withdraw: { type: Number, default: 0.2 },
     ref_bonus: { type: Number, default: 0.2 },
+    penalty_fee: { type: Number, default: 0.10 },
     withdrawals_enabled: { type: Boolean, default: true },
     maintenance_mode: { type: Boolean, default: false },
     current_state: String,
+    penalized_tasks: [String],
     red_flag: { type: Boolean, default: false },
     referralCount: { type: Number, default: 0 },
     createdAt: { type: Date, default: Date.now }
@@ -177,28 +179,22 @@ async function runGhostValidator(ctx) {
             try {
                 const member = await bot.telegram.getChatMember(channelId, user.user_id);
                 
-                // --- UPDATED CHEATER DETECTION ---
+                    // Inside your /sweep or validator.js logic:
+const settings = await getSettings(); // Get current fee from DB
+
 if (['left', 'kicked'].includes(member.status)) {
-    console.log(`🚩 Caught: User ${user.user_id} left ${channelId}`);
-    
     await User.updateOne(
         { user_id: user.user_id },
         { 
             $set: { red_flag: true },
-            $inc: { balance: -0.10 }, // Apply penalty
-            $pull: { completed_tasks: taskId } // 🔄 REMOVE task from completed list
+            $inc: { balance: -settings.penalty_fee }, // 👈 Uses your dynamic fee!
+            $pull: { completed_tasks: taskId },
+            $addToSet: { penalized_tasks: taskId }
         }
     );
     
-    // Notify the user they have to redo the work
-    await bot.telegram.sendMessage(user.user_id, 
-        `🚩 *Penalty Applied!*\n\n` +
-        `You left the channel for task: *${task.name}*.\n` +
-        `• 0.10 USDT has been deducted.\n` +
-        `• The task has been added back to your list.\n\n` +
-        `💡 *Re-join the channel and re-submit proof to clear your flag!*`, 
-        { parse_mode: 'Markdown' }
-    );
+    // Notify the user of the exact amount deducted
+    await bot.telegram.sendMessage(user.user_id, `🚩 *Penalty:* -${settings.penalty_fee} USDT for leaving a channel.`);
 }
                     
                     // Notify the cheater (Optional)
@@ -256,20 +252,22 @@ bot.action('admin_settings', async (ctx) => {
     const s = await getSettings();
     
     const settingsMsg = 
-        `⚙️ *Bot Configuration*\n\n` +
+        `⚙️ *Bot Configuration*\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
         `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
         `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
+        `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` + // 👈 Show current penalty
         `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
 
     const buttons = [
-        [Markup.button.callback('💵 Change Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Change Ref Bonus', 'set_ref')],
+        [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
+        [Markup.button.callback('🚫 Set Penalty', 'set_penalty')], // 👈 New Button
         [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
         [Markup.button.callback('⬅️ Back', 'admin_main')]
     ];
 
     ctx.editMessageText(settingsMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
 });
-
 // Listener for changing values
 bot.action(/^set_(min_wd|ref)$/, async (ctx) => {
     const type = ctx.match[1];
@@ -318,6 +316,25 @@ bot.on('text', async (ctx, next) => {
     }
 
     await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+});
+// Trigger the input state
+bot.action('set_penalty', async (ctx) => {
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_penalty_val' });
+    ctx.reply("🔢 *Enter new Penalty Fee:* (e.g., 0.15)");
+});
+
+// Process the number entered
+bot.on('text', async (ctx, next) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    if (user?.current_state !== 'awaiting_penalty_val') return next();
+
+    const val = parseFloat(ctx.message.text);
+    if (isNaN(val)) return ctx.reply("❌ Invalid number. Try again.");
+
+    await Settings.updateOne({}, { $set: { penalty_fee: val } });
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+
+    ctx.reply(`✅ *Penalty Fee updated to:* ${val} USDT`);
 });
 
 // Back to Category Menu Handler
@@ -400,7 +417,7 @@ bot.action(/^view_task_(.+)$/, async (ctx) => {
             `📝 *Task:* ${task.name}\n` +
             `💰 *Reward:* ${task.reward.toFixed(2)} USDT\n\n` +
             `1️⃣ Click the button below to perform the task.\n` +
-            `2️⃣ Return here and click "Verify" to earn your reward.`;
+            `2️⃣ Return here and click "Verify"or"Upload proof" to earn your reward.`;
 
         const buttons = [[Markup.button.url('🔗 Go to Task', task.url)]];
         
@@ -423,6 +440,25 @@ bot.action(/^view_task_(.+)$/, async (ctx) => {
         console.error("View Task Error:", error);
         ctx.answerCbQuery("⚠️ Error loading task details.");
     }
+});
+
+bot.action('clear_flag_pay', async (ctx) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    const FEE = 0.15; // Cost to remove the red flag
+
+    if (user.balance < FEE) {
+        return ctx.answerCbQuery(`❌ You need ${FEE} USDT to clear your flag.`);
+    }
+
+    await User.updateOne(
+        { user_id: ctx.from.id },
+        { 
+            $inc: { balance: -FEE },
+            $set: { red_flag: false }
+        }
+    );
+
+    ctx.editMessageText("✅ *Account Restored!*\nYour flag has been removed. Please follow the rules to avoid future penalties.");
 });
 
 // Rest of your logic (Profile, Balance, Affiliate) follows...
