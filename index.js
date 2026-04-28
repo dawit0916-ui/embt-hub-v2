@@ -272,26 +272,7 @@ bot.action(/^cat_(.+)$/, async (ctx) => {
         ctx.answerCbQuery("⚠️ Error loading tasks.");
     }
 });
-bot.action('admin_settings', async (ctx) => {
-    const s = await getSettings();
-    
-    const settingsMsg = 
-        `⚙️ *Bot Configuration*\n` +
-        `━━━━━━━━━━━━━━━━━━\n` +
-        `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
-        `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
-        `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` + // 👈 Show current penalty
-        `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
 
-    const buttons = [
-        [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
-        [Markup.button.callback('🚫 Set Penalty', 'set_penalty')], // 👈 New Button
-        [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
-        [Markup.button.callback('⬅️ Back', 'admin_main')]
-    ];
-
-    ctx.editMessageText(settingsMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
-});
 // Listener for changing values
 bot.action(/^set_(min_wd|ref)$/, async (ctx) => {
     const type = ctx.match[1];
@@ -700,6 +681,34 @@ bot.command('admin', async (ctx) => {
         ...adminMenu 
     });
 });
+bot.action('admin_settings', async (ctx) => {
+    try {
+        const s = await getSettings();
+        
+        const settingsMsg = 
+            `⚙️ *Bot Configuration*\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
+            `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
+            `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` +
+            `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
+
+        const buttons = [
+            [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
+            [Markup.button.callback('🚫 Set Penalty', 'set_penalty')],
+            [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
+            [Markup.button.callback('⬅️ Back', 'admin_main')]
+        ];
+
+        await ctx.editMessageText(settingsMsg, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
+        });
+    } catch (e) {
+        console.log(e);
+        ctx.answerCbQuery("❌ Settings error");
+    }
+});
 bot.action('admin_stats', async (ctx) => {
     const totalUsers = await User.countDocuments();
     const flaggedUsers = await User.countDocuments({ red_flag: true });
@@ -898,41 +907,36 @@ bot.on('photo', async (ctx) => {
         console.error("Photo Handling Error:", e);
     }
 });
-bot.command('pending', async (ctx) => {
-    if (!admins.includes(ctx.from.id)) return;
-
+bot.action('admin_pending', async (ctx) => {
     try {
-        // Find users who have at least one '⏳ Pending' item in their history
-        const pendingUsers = await User.find({ 
-            "history.status": "⏳ Pending" 
-        }).limit(10); // Show 10 at a time
+        // This pulls the same logic we built for the /pending command
+        const pendingUsers = await User.find({ "history.status": "⏳ Pending" }).limit(10);
 
         if (pendingUsers.length === 0) {
-            return ctx.reply("✅ *No pending withdrawals!* All users have been paid.");
+            return ctx.editMessageText("✅ *No pending withdrawals!*", {
+                ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Back', 'admin_main')]])
+            });
         }
 
-        let report = "📂 *Pending Payouts (Oldest 10)*\n\n";
+        let report = "📂 *Pending Payouts*\n\n";
         const buttons = [];
 
         pendingUsers.forEach(user => {
-            // Find the specific pending record in the user's history
             const request = user.history.find(h => h.status === "⏳ Pending");
-            
             if (request) {
-                report += `👤 *User:* \`${user.user_id}\`\n💰 *Amount:* ${request.amount}\n🏦 *Wallet:* \`${request.address}\`\n\n`;
-                
-                // Button to quickly mark as paid
-                buttons.push([
-                    Markup.button.callback(`✅ Pay ${user.user_id}`, `admin_paid_${user.user_id}_${request.id}`)
-                ]);
+                report += `👤 \`${user.user_id}\` ➝ ${request.amount} USDT\n`;
+                buttons.push([Markup.button.callback(`✅ Pay ${user.user_id}`, `admin_paid_${user.user_id}_${request.id}`)]);
             }
         });
 
-        ctx.replyWithMarkdown(report, Markup.inlineKeyboard(buttons));
-
-    } catch (error) {
-        console.error("Dashboard Error:", error);
-        ctx.reply("❌ Error loading dashboard.");
+        buttons.push([Markup.button.callback('⬅️ Back', 'admin_main')]);
+        
+        await ctx.editMessageText(report, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
+        });
+    } catch (e) {
+        ctx.answerCbQuery("❌ Payout list error");
     }
 });
 bot.action(/^admin_paid_(.+)_(.+)$/, async (ctx) => {
