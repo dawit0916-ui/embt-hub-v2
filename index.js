@@ -323,22 +323,55 @@ bot.action('toggle_withdrawals', async (ctx) => {
 });
 bot.on('text', async (ctx, next) => {
     const user = await User.findOne({ user_id: ctx.from.id });
+    
+    // If user isn't in an admin state, let the normal bot logic handle it
     if (!user || !user.current_state) return next();
 
-    const val = parseFloat(ctx.message.text);
-    if (isNaN(val)) return ctx.reply("❌ Please enter a valid number.");
+    // 📢 CASE 1: BROADCASTING (Accepts any text/emojis)
+    if (user.current_state === 'awaiting_broadcast') {
+        const message = ctx.message.text;
+        const allUsers = await User.find({}, 'user_id');
+        
+        ctx.reply(`🚀 Starting broadcast to ${allUsers.length} users...`);
+        
+        let success = 0;
+        for (const u of allUsers) {
+            try {
+                await ctx.telegram.sendMessage(u.user_id, message, { parse_mode: 'Markdown' });
+                success++;
+                if (success % 25 === 0) await new Promise(res => setTimeout(res, 1000));
+            } catch (e) { /* User blocked bot */ }
+        }
 
-    if (user.current_state === 'awaiting_min_wd') {
-        await Settings.updateOne({}, { min_withdraw: val });
-        ctx.reply(`✅ Minimum withdrawal set to ${val} USDT`);
-    } else if (user.current_state === 'awaiting_ref') {
-        await Settings.updateOne({}, { ref_bonus: val });
-        ctx.reply(`✅ Referral bonus set to ${val} USDT`);
-    } else {
-        return next();
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+        return ctx.reply(`✅ *Broadcast Complete!* Sent to ${success} users.`);
     }
 
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+    // 🔢 CASE 2: NUMERIC SETTINGS (Min Withdraw, Penalty, Ref Bonus)
+    const val = parseFloat(ctx.message.text);
+    
+    if (user.current_state === 'awaiting_penalty_val') {
+        if (isNaN(val)) return ctx.reply("❌ Please enter a number for the Penalty.");
+        await Settings.updateOne({}, { penalty_fee: val });
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+        return ctx.reply(`✅ Penalty Fee set to ${val} USDT`);
+    }
+
+    if (user.current_state === 'awaiting_min_wd') {
+        if (isNaN(val)) return ctx.reply("❌ Please enter a number for Min Withdraw.");
+        await Settings.updateOne({}, { min_withdraw: val });
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+        return ctx.reply(`✅ Min Withdraw set to ${val} USDT`);
+    }
+
+    if (user.current_state === 'awaiting_ref') {
+        if (isNaN(val)) return ctx.reply("❌ Please enter a number for Ref Bonus.");
+        await Settings.updateOne({}, { ref_bonus: val });
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+        return ctx.reply(`✅ Referral Bonus set to ${val} USDT`);
+    }
+
+    return next();
 });
 // Trigger the input state
 bot.action('set_penalty', async (ctx) => {
