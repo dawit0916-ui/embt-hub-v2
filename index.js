@@ -40,12 +40,72 @@ const User = mongoose.model('User', new mongoose.Schema({
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
 }));
-async function getSettings() {
-    let settings = await Settings.findOne();
-    if (!settings) settings = await Settings.create({});
-    return settings;
-}
+
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
+// --- ROBUST SETTINGS FETCHER ---
+async function getSettings() {
+    try {
+        let s = await Settings.findOne();
+        if (!s) {
+            // Create default settings if the collection is empty
+            s = await Settings.create({
+                min_withdraw: 0.2,
+                ref_bonus: 0.1,
+                penalty_fee: 0.1,
+                withdrawals_enabled: true,
+                maintenance_mode: false
+            });
+        }
+        return s;
+    } catch (err) {
+        console.error("Database Settings Error:", err);
+        return null;
+    }
+}
+bot.use(async (ctx, next) => {
+    const s = await getSettings();
+    const ADMIN_ID = 7329000880; // 👈 REPLACE with your real Telegram ID
+
+    // If Maintenance is ON and the user is NOT the admin
+    if (s.maintenance_mode && ctx.from.id !== ADMIN_ID) {
+        // Only respond to messages, ignore button clicks to save server resources
+        if (ctx.message) {
+            return ctx.reply("🛠 *Bot Under Maintenance*\n\nWe are currently updating our systems to handle the 10,000+ user load. We will be back online shortly!", { parse_mode: 'Markdown' });
+        }
+        return; // Silently ignore other interactions
+    }
+
+    return next(); // If off, or if you are admin, continue as normal
+});
+
+// --- UPDATED SETTINGS HANDLER ---
+bot.action('admin_settings', async (ctx) => {
+    try {
+        const s = await getSettings();
+        if (!s) return ctx.answerCbQuery("❌ DB Error: Settings not found.");
+
+        const settingsMsg = 
+            `⚙️ *Bot Configuration*\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
+            `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
+            `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` +
+            `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
+
+        await ctx.editMessageText(settingsMsg, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
+                [Markup.button.callback('🚫 Set Penalty', 'set_penalty')],
+                [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
+                [Markup.button.callback('⬅️ Back', 'admin_main')]
+            ])
+        });
+    } catch (e) {
+        console.error(e);
+        ctx.answerCbQuery("❌ Settings UI Error");
+    }
+});
 // --- 1. AFFILIATE SYSTEM ---
 bot.hears('👥 Affiliate', async (ctx) => {
     try {
@@ -164,6 +224,23 @@ bot.action(/^verify_tg_(.+)$/, async (ctx) => {
     } catch (e) {
         // 🛑 BOT PERMISSION ERROR
         ctx.answerCbQuery("❌ Error: Make sure the Bot is an Admin in the channel!", { show_alert: true });
+    }
+});
+bot.action('toggle_maint', async (ctx) => {
+    try {
+        const s = await getSettings();
+        const newState = !s.maintenance_mode;
+        
+        await Settings.updateOne({}, { $set: { maintenance_mode: newState } });
+        
+        ctx.answerCbQuery(`🛠 Maintenance Mode: ${newState ? 'ENABLED 🔴' : 'DISABLED 🟢'}`);
+        
+        // Refresh the settings menu to show the updated status
+        return ctx.scene ? ctx.scene.enter('admin_settings') : ctx.editMessageText(ctx.callbackQuery.message.text, {
+             reply_markup: ctx.callbackQuery.message.reply_markup // Just a quick UI refresh
+        });
+    } catch (e) {
+        ctx.answerCbQuery("❌ Failed to toggle maintenance.");
     }
 });
 // --- 2. EARN MORE (CATEGORY MENU) ---
@@ -681,32 +758,27 @@ bot.command('admin', async (ctx) => {
         ...adminMenu 
     });
 });
-bot.action('admin_settings', async (ctx) => {
+bot.action('admin_security', async (ctx) => {
     try {
         const s = await getSettings();
         
-        const settingsMsg = 
-            `⚙️ *Bot Configuration*\n` +
+        const securityMsg = 
+            `🚩 *Security & Enforcement*\n` +
             `━━━━━━━━━━━━━━━━━━\n` +
-            `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
-            `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
-            `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` +
-            `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
+            `🏦 *Withdrawals:* ${s.withdrawals_enabled ? 'ENABLED 🟢' : 'LOCKED 🔴'}\n` +
+            `🕵️ *Validator:* System Ready`;
 
-        const buttons = [
-            [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
-            [Markup.button.callback('🚫 Set Penalty', 'set_penalty')],
-            [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
-            [Markup.button.callback('⬅️ Back', 'admin_main')]
-        ];
-
-        await ctx.editMessageText(settingsMsg, { 
+        await ctx.editMessageText(securityMsg, { 
             parse_mode: 'Markdown', 
-            ...Markup.inlineKeyboard(buttons) 
+            ...Markup.inlineKeyboard([
+                [Markup.button.callback(s.withdrawals_enabled ? '🔒 Lock Withdrawals' : '🔓 Unlock Withdrawals', 'toggle_withdrawals')],
+                [Markup.button.callback('🧹 Run /sweep (Ghost)', 'run_sweep')],
+                [Markup.button.callback('⬅️ Back', 'admin_main')]
+            ])
         });
     } catch (e) {
-        console.log(e);
-        ctx.answerCbQuery("❌ Settings error");
+        console.error(e);
+        ctx.answerCbQuery("❌ Security Menu Error");
     }
 });
 bot.action('admin_stats', async (ctx) => {
