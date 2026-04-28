@@ -162,56 +162,58 @@ bot.hears('💸 Earn More', (ctx) => {
     ctx.replyWithMarkdown(msg, categoryButtons);
 });
 // --- 1. THE GHOST VALIDATOR FUNCTION ---
+// --- THE CORRECTED GHOST VALIDATOR ---
 async function runGhostValidator(ctx) {
-    ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
-    
-    const users = await User.find({ red_flag: false }); 
-    const tgTasks = await Task.find({ type: 'telegram' });
-    let caughtCount = 0;
+    try {
+        await ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
+        
+        const users = await User.find({ red_flag: false }); 
+        const tgTasks = await Task.find({ type: 'telegram' });
+        const settings = await getSettings(); // Get your dynamic penalty fee
+        let caughtCount = 0;
 
-    for (const user of users) {
-        for (const taskId of user.completed_tasks) {
-            const task = tgTasks.find(t => t.id === taskId);
-            if (!task) continue;
+        for (const user of users) {
+            for (const taskId of user.completed_tasks) {
+                const task = tgTasks.find(t => t.id === taskId);
+                if (!task) continue;
 
-            const channelId = "@" + task.url.split('t.me/')[1].split('/')[0];
+                const channelId = "@" + task.url.split('t.me/')[1].split('/')[0];
 
-            try {
-                const member = await bot.telegram.getChatMember(channelId, user.user_id);
-                
-                    // Inside your /sweep or validator.js logic:
-const settings = await getSettings(); // Get current fee from DB
-
-if (['left', 'kicked'].includes(member.status)) {
-    await User.updateOne(
-        { user_id: user.user_id },
-        { 
-            $set: { red_flag: true },
-            $inc: { balance: -settings.penalty_fee }, // 👈 Uses your dynamic fee!
-            $pull: { completed_tasks: taskId },
-            $addToSet: { penalized_tasks: taskId }
-        }
-    );
-    
-    // Notify the user of the exact amount deducted
-    await bot.telegram.sendMessage(user.user_id, `🚩 *Penalty:* -${settings.penalty_fee} USDT for leaving a channel.`);
-}
+                try {
+                    const member = await bot.telegram.getChatMember(channelId, user.user_id);
                     
-                    // Notify the cheater (Optional)
-                    await bot.telegram.sendMessage(user.user_id, "🚩 *Account Flagged!* You left a channel. The 0.10 USDT penalty will be applied.");
-                    break; 
+                    if (['left', 'kicked'].includes(member.status)) {
+                        caughtCount++;
+                        await User.updateOne(
+                            { user_id: user.user_id },
+                            { 
+                                $set: { red_flag: true },
+                                $inc: { balance: -settings.penalty_fee }, 
+                                $pull: { completed_tasks: taskId }, // Pull back the task
+                                $addToSet: { penalized_tasks: taskId } // Lock it
+                            }
+                        );
+                        
+                        await bot.telegram.sendMessage(user.user_id, `🚩 *Account Flagged!* You left a channel. A ${settings.penalty_fee} USDT penalty applied.`);
+                        break; 
+                    }
+                } catch (e) {
+                    // This catch handles if the bot is kicked from a channel it's trying to check
+                    continue;
                 }
-            } catch (e) {
-                // Bot might not be admin in that specific channel anymore
-                continue;
+                // Anti-spam delay for Telegram API
+                await new Promise(res => setTimeout(res, 100));
             }
-            // 🛑 CRITICAL: Wait 100ms so Telegram doesn't ban your bot for spamming!
-            await new Promise(res => setTimeout(res, 100));
         }
-    }
-    ctx.reply(`✨ *Sweep Complete!* Found and penalized ${caughtCount} cheaters.`);
-}
+        
+        await ctx.reply(`✨ *Sweep Complete!* Found and penalized ${caughtCount} cheaters.`);
 
+    } catch (globalError) {
+        // 🚨 THIS IS THE MISSING CATCH THAT CAUSED YOUR RENDER ERROR 🚨
+        console.error("Ghost Validator Global Error:", globalError);
+        if (ctx) await ctx.reply("❌ The validator encountered a critical error during the sweep.");
+    }
+                                                                    }
 // --- 2. THE ADMIN TRIGGER ---
 bot.command('sweep', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return;
