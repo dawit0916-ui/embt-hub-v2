@@ -77,6 +77,27 @@ bot.hears('👥 Affiliate', async (ctx) => {
         ctx.reply("⚠️ Error loading affiliate data. Try /start");
     }
 });
+bot.action('admin_main', async (ctx) => {
+    try {
+        const adminMenu = Markup.inlineKeyboard([
+            [Markup.button.callback('📊 Stats', 'admin_stats'), Markup.button.callback('💸 Payouts', 'admin_pending')],
+            [Markup.button.callback('📋 Task Management', 'admin_tasks'), Markup.button.callback('⚙️ Bot Settings', 'admin_settings')],
+            [Markup.button.callback('🚩 Security', 'admin_security'), Markup.button.callback('📢 Broadcast', 'admin_broadcast')]
+        ]);
+        await User.updateOne({ user_id: ctx.from.id }, { $set: { current_state: null } });
+        // Using editMessageText makes the transition smooth
+        await ctx.editMessageText("🛠 *EMBT Admin Control Center*\nSelect a category to manage your bot:", { 
+            parse_mode: 'Markdown', 
+            ...adminMenu 
+        });
+        
+        // Optional: Answer callback to remove the "loading" state on the button
+        ctx.answerCbQuery();
+    } catch (error) {
+        console.error("Admin Main Error:", error);
+        ctx.answerCbQuery("❌ Error returning to main menu.");
+    }
+});
 // --- THE SPAM SHIELD (RATE LIMITER) ---
 const userCooldowns = new Map();
 const COOLDOWN_MS = 1500; // 1.5 seconds between clicks
