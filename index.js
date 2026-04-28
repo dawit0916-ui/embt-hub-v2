@@ -25,15 +25,24 @@ const User = mongoose.model('User', new mongoose.Schema({
     balance: { type: Number, default: 0 },
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
+    min_withdraw: { type: Number, default: 0.2 },
+    ref_bonus: { type: Number, default: 0.2 },
+    withdrawals_enabled: { type: Boolean, default: true },
+    maintenance_mode: { type: Boolean, default: false },
     current_state: String,
     red_flag: { type: Boolean, default: false },
-    referralCount: { type: Number, default: 0 }
+    referralCount: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now }
 }));
 
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
 }));
-
+async function getSettings() {
+    let settings = await Settings.findOne();
+    if (!settings) settings = await Settings.create({});
+    return settings;
+}
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 // --- 1. AFFILIATE SYSTEM ---
 bot.hears('👥 Affiliate', async (ctx) => {
@@ -228,6 +237,73 @@ bot.action(/^cat_(.+)$/, async (ctx) => {
         ctx.answerCbQuery("⚠️ Error loading tasks.");
     }
 });
+bot.action('admin_settings', async (ctx) => {
+    const s = await getSettings();
+    
+    const settingsMsg = 
+        `⚙️ *Bot Configuration*\n\n` +
+        `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
+        `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
+        `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
+
+    const buttons = [
+        [Markup.button.callback('💵 Change Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Change Ref Bonus', 'set_ref')],
+        [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
+        [Markup.button.callback('⬅️ Back', 'admin_main')]
+    ];
+
+    ctx.editMessageText(settingsMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+});
+
+// Listener for changing values
+bot.action(/^set_(min_wd|ref)$/, async (ctx) => {
+    const type = ctx.match[1];
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: `awaiting_${type}` });
+    ctx.reply(`🔢 Enter the new value for ${type === 'ref' ? 'Referral Bonus' : 'Minimum Withdrawal'}:`);
+});
+bot.action('admin_security', async (ctx) => {
+    const s = await getSettings();
+    
+    const securityMsg = 
+        `🚩 *Security & Enforcement*\n\n` +
+        `🏦 *Withdrawals:* ${s.withdrawals_enabled ? 'ENABLED 🟢' : 'LOCKED 🔴'}\n` +
+        `🕵️ *Validator:* Ready for sweep`;
+
+    const buttons = [
+        [Markup.button.callback(s.withdrawals_enabled ? '🔒 Lock Withdrawals' : '🔓 Unlock Withdrawals', 'toggle_withdrawals')],
+        [Markup.button.callback('🧹 Run /sweep (Ghost Validator)', 'run_sweep')],
+        [Markup.button.callback('⬅️ Back', 'admin_main')]
+    ];
+
+    ctx.editMessageText(securityMsg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+});
+
+// Toggle Withdrawal Logic
+bot.action('toggle_withdrawals', async (ctx) => {
+    const s = await getSettings();
+    await Settings.updateOne({}, { $set: { withdrawals_enabled: !s.withdrawals_enabled } });
+    ctx.answerCbQuery(`Withdrawals ${s.withdrawals_enabled ? 'Locked' : 'Unlocked'}`);
+    return ctx.scene.enter('admin_security'); // Refresh menu
+});
+bot.on('text', async (ctx, next) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    if (!user || !user.current_state) return next();
+
+    const val = parseFloat(ctx.message.text);
+    if (isNaN(val)) return ctx.reply("❌ Please enter a valid number.");
+
+    if (user.current_state === 'awaiting_min_wd') {
+        await Settings.updateOne({}, { min_withdraw: val });
+        ctx.reply(`✅ Minimum withdrawal set to ${val} USDT`);
+    } else if (user.current_state === 'awaiting_ref') {
+        await Settings.updateOne({}, { ref_bonus: val });
+        ctx.reply(`✅ Referral bonus set to ${val} USDT`);
+    } else {
+        return next();
+    }
+
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+});
 
 // Back to Category Menu Handler
 bot.action('back_to_earn', (ctx) => {
@@ -343,6 +419,15 @@ bot.hears('👤 Profile', async (ctx) => {
             return ctx.reply("❌ Profile not found. Please type /start to register.");
         }
 
+        // 📅 DATE LOGIC: Check if createdAt exists, otherwise show "Verified User"
+        const joinDate = user.createdAt 
+            ? new Date(user.createdAt).toLocaleDateString('en-US', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              }) 
+            : "Verified User";
+
         // Determine Account Status
         const status = user.red_flag ? "🚩 Flagged (Penalty Due)" : "✅ Active / Professional";
         
@@ -351,14 +436,14 @@ bot.hears('👤 Profile', async (ctx) => {
 
         const profileMsg = 
             `👤 *USER DASHBOARD*\n` +
-            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `━━━━━━━━━━━━━━━━\n\n` +
             `🆔 *User ID:* \`${user.user_id}\`\n` +
             `🛡 *Status:* ${status}\n\n` +
             `💰 *Current Balance:* \`${user.balance.toFixed(4)}\` USDT\n` +
             `📈 *Total Earned:* \`${user.total_earned.toFixed(4)}\` USDT\n\n` +
             `👥 *Referrals:* \`${user.referralCount || 0}\` users\n` +
             `✅ *Tasks Completed:* \`${tasksDone}\` tasks\n\n` +
-            `📅 *Member Since:* _Verified User_`;
+            `📅 *Member Since:* _${joinDate}_`; // 👈 Dynamic Join Date
 
         const profileButtons = Markup.inlineKeyboard([
             [Markup.button.callback('🔄 Refresh Data', 'refresh_profile')],
@@ -375,21 +460,23 @@ bot.hears('👤 Profile', async (ctx) => {
 
 // --- REFRESH BUTTON HANDLER ---
 bot.action('refresh_profile', async (ctx) => {
-    // This just re-triggers the profile view with updated data
     try {
         const user = await User.findOne({ user_id: ctx.from.id });
-        const status = user.red_flag ? "🚩 Flagged" : "✅ Active";
-        const tasksDone = user.completed_tasks ? user.completed_tasks.length : 0;
+        
+        const joinDate = user.createdAt 
+            ? new Date(user.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) 
+            : "Verified User";
 
         const updatedMsg = 
             `👤 *USER DASHBOARD (Updated)*\n` +
-            `━━━━━━━━━━━━━━━━━━\n\n` +
+            `━━━━━━━━━━━━━━━━\n\n` +
             `🆔 *User ID:* \`${user.user_id}\`\n` +
-            `🛡 *Status:* ${status}\n\n` +
+            `🛡 *Status:* ${user.red_flag ? "🚩 Flagged" : "✅ Active"}\n\n` +
             `💰 *Current Balance:* \`${user.balance.toFixed(4)}\` USDT\n` +
             `📈 *Total Earned:* \`${user.total_earned.toFixed(4)}\` USDT\n\n` +
             `👥 *Referrals:* \`${user.referralCount || 0}\` users\n` +
-            `✅ *Tasks Completed:* \`${tasksDone}\` tasks`;
+            `✅ *Tasks Completed:* \`${user.completed_tasks?.length || 0}\` tasks\n\n` +
+            `📅 *Member Since:* _${joinDate}_`;
 
         await ctx.editMessageText(updatedMsg, {
             parse_mode: 'Markdown',
@@ -398,7 +485,7 @@ bot.action('refresh_profile', async (ctx) => {
                 [Markup.button.callback('📜 Transaction History', 'view_history')]
             ])
         });
-        ctx.answerCbQuery("✨ Profile Updated");
+        ctx.answerCbQuery("✨ Data Refreshed");
     } catch (e) {
         ctx.answerCbQuery("❌ Update failed.");
     }
@@ -454,7 +541,11 @@ bot.action('view_withdraw', async (ctx) => {
     if (user.balance < MIN_WITHDRAW) {
         return ctx.answerCbQuery(`⚠️ Minimum withdrawal is ${MIN_WITHDRAW} USDT.`, { show_alert: true });
     }
-
+    // Inside your user withdrawal handler
+const s = await getSettings();
+if (!s.withdrawals_enabled) {
+    return ctx.reply("⚠️ Withdrawals are temporarily paused for maintenance. Check back later!");
+}
     // SET STATE TO WAIT FOR WALLET
     await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_wallet' });
     
@@ -466,6 +557,99 @@ bot.action('view_withdraw', async (ctx) => {
         { parse_mode: 'Markdown' }
     );
 });
+bot.command('admin', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) return; // Hidden from regular users
+
+    const adminMenu = Markup.inlineKeyboard([
+        [Markup.button.callback('📊 Stats', 'admin_stats'), Markup.button.callback('💸 Payouts', 'admin_pending')],
+        [Markup.button.callback('📋 Task Management', 'admin_tasks'), Markup.button.callback('⚙️ Bot Settings', 'admin_settings')],
+        [Markup.button.callback('🚩 Security', 'admin_security'), Markup.button.callback('📢 Broadcast', 'admin_broadcast')]
+    ]);
+
+    ctx.reply("🛠 *EMBT Admin Control Center*\nSelect a category to manage your bot:", { 
+        parse_mode: 'Markdown', 
+        ...adminMenu 
+    });
+});
+bot.action('admin_stats', async (ctx) => {
+    const totalUsers = await User.countDocuments();
+    const flaggedUsers = await User.countDocuments({ red_flag: true });
+    const activeTasks = await Task.countDocuments({ enabled: true });
+    
+    // Calculate total liability (money users have earned but not withdrawn)
+    const totalBalance = await User.aggregate([
+        { $group: { _id: null, sum: { $sum: "$balance" } } }
+    ]);
+
+    const statsMsg = 
+        `📊 *Live Statistics*\n\n` +
+        `👥 *Total Users:* ${totalUsers}\n` +
+        `🚩 *Flagged:* ${flaggedUsers}\n` +
+        `📝 *Active Tasks:* ${activeTasks}\n` +
+        `💰 *User Liabilities:* ${totalBalance[0]?.sum.toFixed(2) || 0} USDT\n\n` +
+        `_Last updated: ${new Date().toLocaleTimeString()}_`;
+
+    ctx.editMessageText(statsMsg, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Back', 'admin_main')]])
+    });
+});
+bot.action('admin_tasks', async (ctx) => {
+    const tasks = await Task.find().limit(10);
+    const buttons = tasks.map(t => [
+        Markup.button.callback(`${t.enabled ? '🟢' : '🔴'} ${t.name}`, `toggle_task_${t.id}`)
+    ]);
+    
+    buttons.push([Markup.button.callback('➕ Add New Task', 'admin_add_task')]);
+    buttons.push([Markup.button.callback('⬅️ Back', 'admin_main')]);
+
+    ctx.editMessageText("📋 *Task Management*\n🟢 = Visible to users\n🔴 = Hidden from users\n\nClick a task to toggle its status:", {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard(buttons)
+    });
+});
+
+// The Toggle Logic
+bot.action(/^toggle_task_(.+)$/, async (ctx) => {
+    const taskId = ctx.match[1];
+    const task = await Task.findOne({ id: taskId });
+    
+    await Task.updateOne({ id: taskId }, { $set: { enabled: !task.enabled } });
+    
+    ctx.answerCbQuery(`Task ${task.enabled ? 'Disabled' : 'Enabled'}!`);
+    return ctx.scene.enter('admin_tasks'); // Re-render the menu
+});
+bot.action('admin_broadcast', async (ctx) => {
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_broadcast' });
+    ctx.reply("📢 *Send your broadcast message:*\n\nYou can use text, emojis, and links. Every user will receive this.");
+});
+
+// Listener for the broadcast text
+bot.on('text', async (ctx, next) => {
+    const user = await User.findOne({ user_id: ctx.from.id });
+    if (user.current_state !== 'awaiting_broadcast') return next();
+
+    const message = ctx.message.text;
+    const allUsers = await User.find({}, 'user_id');
+    
+    ctx.reply(`🚀 Starting broadcast to ${allUsers.length} users...`);
+    
+    let success = 0;
+    for (const u of allUsers) {
+        try {
+            await ctx.telegram.sendMessage(u.user_id, message, { parse_mode: 'Markdown' });
+            success++;
+            // Prevent hitting Telegram limits: 30 messages per second
+            if (success % 25 === 0) await new Promise(res => setTimeout(res, 1000));
+        } catch (e) {
+            // User blocked the bot
+        }
+    }
+
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+    ctx.reply(`✅ *Broadcast Complete!*\nSent to ${success} active users.`);
+});
+
 bot.command('paid', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return;
     
