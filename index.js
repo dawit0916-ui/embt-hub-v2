@@ -82,33 +82,7 @@ bot.use(async (ctx, next) => {
 });
 
 // --- UPDATED SETTINGS HANDLER ---
-bot.action('admin_settings', async (ctx) => {
-    try {
-        const s = await getSettings();
-        if (!s) return ctx.answerCbQuery("❌ DB Error: Settings not found.");
 
-        const settingsMsg = 
-            `⚙️ *Bot Configuration*\n` +
-            `━━━━━━━━━━━━━━━━━━\n` +
-            `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
-            `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
-            `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` +
-            `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}`;
-
-        await ctx.editMessageText(settingsMsg, { 
-            parse_mode: 'Markdown', 
-            ...Markup.inlineKeyboard([
-                [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
-                [Markup.button.callback('🚫 Set Penalty', 'set_penalty')],
-                [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
-                [Markup.button.callback('⬅️ Back', 'admin_main')]
-            ])
-        });
-    } catch (e) {
-        console.error(e);
-        ctx.answerCbQuery("❌ Settings UI Error");
-    }
-});
 // --- 1. AFFILIATE SYSTEM ---
 bot.hears('👥 Affiliate', async (ctx) => {
     try {
