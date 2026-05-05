@@ -25,16 +25,19 @@ const User = mongoose.model('User', new mongoose.Schema({
     balance: { type: Number, default: 0 },
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
-    min_withdraw: { type: Number, default: 0.2 },
-    ref_bonus: { type: Number, default: 0.2 },
-    penalty_fee: { type: Number, default: 0.10 },
-    withdrawals_enabled: { type: Boolean, default: true },
-    maintenance_mode: { type: Boolean, default: false },
     current_state: String,
-    penalized_tasks: [String],
     red_flag: { type: Boolean, default: false },
     referralCount: { type: Number, default: 0 },
+    history: [{ type: Object }], // 👈 Added this
     createdAt: { type: Date, default: Date.now }
+}));
+
+const Settings = mongoose.model('Settings', new mongoose.Schema({
+    min_withdraw: { type: Number, default: 0.2 },
+    ref_bonus: { type: Number, default: 0.1 },
+    penalty_fee: { type: Number, default: 0.1 },
+    withdrawals_enabled: { type: Boolean, default: true },
+    maintenance_mode: { type: Boolean, default: false }
 }));
 
 const Task = mongoose.model('Task', new mongoose.Schema({
@@ -382,11 +385,6 @@ const showCancelBtn = async (ctx, text) => {
     });
 };
 
-// --- UPDATE SETTINGS ACTION ---
-bot.action('set_penalty', async (ctx) => {
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_penalty_val' });
-    await showCancelBtn(ctx, "🔢 *Enter new Penalty Fee:* (e.g., 0.15)\n\n_Or click below to cancel._");
-});
 
 // --- UPDATE BROADCAST ACTION ---
 bot.action('admin_broadcast', async (ctx) => {
@@ -399,59 +397,84 @@ bot.action('toggle_withdrawals', async (ctx) => {
     const s = await getSettings();
     await Settings.updateOne({}, { $set: { withdrawals_enabled: !s.withdrawals_enabled } });
     ctx.answerCbQuery(`Withdrawals ${s.withdrawals_enabled ? 'Locked' : 'Unlocked'}`);
-    return ctx.scene.enter('admin_security'); // Refresh menu
+    const adminSecurityHandler = bot.listeners().find(l => l.name === 'admin_security'); // Refresh menu
 });
+
 bot.on('text', async (ctx, next) => {
     const user = await User.findOne({ user_id: ctx.from.id });
-    
-    // If user isn't in an admin state, let the normal bot logic handle it
     if (!user || !user.current_state) return next();
 
-    // 📢 CASE 1: BROADCASTING (Accepts any text/emojis)
-    if (user.current_state === 'awaiting_broadcast') {
-        const message = ctx.message.text;
+    const state = user.current_state;
+
+    // 📢 BROADCAST
+    if (state === 'awaiting_broadcast') {
         const allUsers = await User.find({}, 'user_id');
-        
-        ctx.reply(`🚀 Starting broadcast to ${allUsers.length} users...`);
-        
+        ctx.reply(`🚀 Sending to ${allUsers.length} users...`);
         let success = 0;
         for (const u of allUsers) {
             try {
-                await ctx.telegram.sendMessage(u.user_id, message, { parse_mode: 'Markdown' });
+                await ctx.telegram.sendMessage(u.user_id, ctx.message.text, { parse_mode: 'Markdown' });
                 success++;
                 if (success % 25 === 0) await new Promise(res => setTimeout(res, 1000));
-            } catch (e) { /* User blocked bot */ }
+            } catch (e) {}
+        }
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+        return ctx.reply(`✅ Broadcast sent to ${success} users.`);
+    }
+
+    // 🔢 NUMERIC SETTINGS
+    const val = parseFloat(ctx.message.text);
+    if (state.startsWith('awaiting_')) {
+        if (isNaN(val)) return ctx.reply("❌ Please enter a valid number.");
+        
+        if (state === 'awaiting_penalty_val') await Settings.updateOne({}, { penalty_fee: val });
+        if (state === 'awaiting_min_wd') await Settings.updateOne({}, { min_withdraw: val });
+        if (state === 'awaiting_ref') await Settings.updateOne({}, { ref_bonus: val });
+
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
+        return ctx.reply(`✅ Updated to ${val}`);
+    }
+
+    // 🏦 WALLET
+    if (state === 'awaiting_wallet') {
+       if (!address.startsWith('0x') || address.length < 40) {
+           const address = ctx.message.text.trim();
+            return ctx.reply("❌ Invalid Address! Please send a valid USDT (BEP20) wallet.");
         }
 
-        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-        return ctx.reply(`✅ *Broadcast Complete!* Sent to ${success} users.`);
-    }
+        const amount = user.balance;
+        const transId = 'W' + Math.floor(Math.random() * 100000);
 
-    // 🔢 CASE 2: NUMERIC SETTINGS (Min Withdraw, Penalty, Ref Bonus)
-    const val = parseFloat(ctx.message.text);
+        // 1. UPDATE USER (Atomic Update)
+        await User.updateOne({ user_id: ctx.from.id }, { 
+            $set: { balance: 0, current_state: null },
+            $push: { 
+                history: { 
+                    type: '📤 Withdrawal', 
+                    amount: `${amount.toFixed(2)} USDT`, 
+                    status: '⏳ Pending',
+                    address: address,
+                    id: transId 
+                } 
+            }
+        });
+
+        // 2. NOTIFY ADMINS
+        for (const adminId of admins) {
+            ctx.telegram.sendMessage(adminId, 
+                `💸 *NEW WITHDRAWAL REQ*\n\n` +
+                `👤 User: \`${ctx.from.id}\`\n` +
+                `💰 Amount: \`${amount.toFixed(4)}\` USDT\n` +
+                `🏦 Addr: \`${address}\`\n` +
+                `🆔 ID: \`${transId}\`\n\n` +
+                `To mark as paid:\n\`/paid ${ctx.from.id} ${amount}\``, 
+                { parse_mode: 'Markdown' }
+            );
+        }
+
+        ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
+                                         }
     
-    if (user.current_state === 'awaiting_penalty_val') {
-        if (isNaN(val)) return ctx.reply("❌ Please enter a number for the Penalty.");
-        await Settings.updateOne({}, { penalty_fee: val });
-        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-        return ctx.reply(`✅ Penalty Fee set to ${val} USDT`);
-    }
-
-    if (user.current_state === 'awaiting_min_wd') {
-        if (isNaN(val)) return ctx.reply("❌ Please enter a number for Min Withdraw.");
-        await Settings.updateOne({}, { min_withdraw: val });
-        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-        return ctx.reply(`✅ Min Withdraw set to ${val} USDT`);
-    }
-
-    if (user.current_state === 'awaiting_ref') {
-        if (isNaN(val)) return ctx.reply("❌ Please enter a number for Ref Bonus.");
-        await Settings.updateOne({}, { ref_bonus: val });
-        await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-        return ctx.reply(`✅ Referral Bonus set to ${val} USDT`);
-    }
-
-    return next();
 });
 // Trigger the input state
 bot.action('set_penalty', async (ctx) => {
@@ -460,18 +483,6 @@ bot.action('set_penalty', async (ctx) => {
 });
 
 // Process the number entered
-bot.on('text', async (ctx, next) => {
-    const user = await User.findOne({ user_id: ctx.from.id });
-    if (user?.current_state !== 'awaiting_penalty_val') return next();
-
-    const val = parseFloat(ctx.message.text);
-    if (isNaN(val)) return ctx.reply("❌ Invalid number. Try again.");
-
-    await Settings.updateOne({}, { $set: { penalty_fee: val } });
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-
-    ctx.reply(`✅ *Penalty Fee updated to:* ${val} USDT`);
-});
 
 // Back to Category Menu Handler
 bot.action('back_to_earn', (ctx) => {
@@ -758,29 +769,7 @@ bot.command('admin', async (ctx) => {
         ...adminMenu 
     });
 });
-bot.action('admin_security', async (ctx) => {
-    try {
-        const s = await getSettings();
-        
-        const securityMsg = 
-            `🚩 *Security & Enforcement*\n` +
-            `━━━━━━━━━━━━━━━━━━\n` +
-            `🏦 *Withdrawals:* ${s.withdrawals_enabled ? 'ENABLED 🟢' : 'LOCKED 🔴'}\n` +
-            `🕵️ *Validator:* System Ready`;
 
-        await ctx.editMessageText(securityMsg, { 
-            parse_mode: 'Markdown', 
-            ...Markup.inlineKeyboard([
-                [Markup.button.callback(s.withdrawals_enabled ? '🔒 Lock Withdrawals' : '🔓 Unlock Withdrawals', 'toggle_withdrawals')],
-                [Markup.button.callback('🧹 Run /sweep (Ghost)', 'run_sweep')],
-                [Markup.button.callback('⬅️ Back', 'admin_main')]
-            ])
-        });
-    } catch (e) {
-        console.error(e);
-        ctx.answerCbQuery("❌ Security Menu Error");
-    }
-});
 bot.action('admin_stats', async (ctx) => {
     const totalUsers = await User.countDocuments();
     const flaggedUsers = await User.countDocuments({ red_flag: true });
@@ -819,46 +808,7 @@ bot.action('admin_tasks', async (ctx) => {
     });
 });
 
-// The Toggle Logic
-bot.action(/^toggle_task_(.+)$/, async (ctx) => {
-    const taskId = ctx.match[1];
-    const task = await Task.findOne({ id: taskId });
-    
-    await Task.updateOne({ id: taskId }, { $set: { enabled: !task.enabled } });
-    
-    ctx.answerCbQuery(`Task ${task.enabled ? 'Disabled' : 'Enabled'}!`);
-    return ctx.scene.enter('admin_tasks'); // Re-render the menu
-});
-bot.action('admin_broadcast', async (ctx) => {
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_broadcast' });
-    ctx.reply("📢 *Send your broadcast message:*\n\nYou can use text, emojis, and links. Every user will receive this.");
-});
 
-// Listener for the broadcast text
-bot.on('text', async (ctx, next) => {
-    const user = await User.findOne({ user_id: ctx.from.id });
-    if (user.current_state !== 'awaiting_broadcast') return next();
-
-    const message = ctx.message.text;
-    const allUsers = await User.find({}, 'user_id');
-    
-    ctx.reply(`🚀 Starting broadcast to ${allUsers.length} users...`);
-    
-    let success = 0;
-    for (const u of allUsers) {
-        try {
-            await ctx.telegram.sendMessage(u.user_id, message, { parse_mode: 'Markdown' });
-            success++;
-            // Prevent hitting Telegram limits: 30 messages per second
-            if (success % 25 === 0) await new Promise(res => setTimeout(res, 1000));
-        } catch (e) {
-            // User blocked the bot
-        }
-    }
-
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
-    ctx.reply(`✅ *Broadcast Complete!*\nSent to ${success} active users.`);
-});
 
 bot.command('paid', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return;
@@ -876,52 +826,7 @@ bot.command('paid', async (ctx) => {
         ctx.reply("❌ Could not send message to user.");
     }
 });
-bot.on('text', async (ctx) => {
-    const user = await User.findOne({ user_id: ctx.from.id });
-    if (!user) return;
 
-    // Handle Wallet Submission
-    if (user.current_state === 'awaiting_wallet') {
-        const address = ctx.message.text.trim();
-        
-        // Basic Validation (BEP20 addresses usually start with 0x)
-        if (!address.startsWith('0x') || address.length < 40) {
-            return ctx.reply("❌ Invalid Address! Please send a valid USDT (BEP20) wallet.");
-        }
-
-        const amount = user.balance;
-        const transId = 'W' + Math.floor(Math.random() * 100000);
-
-        // 1. UPDATE USER (Atomic Update)
-        await User.updateOne({ user_id: ctx.from.id }, { 
-            $set: { balance: 0, current_state: null },
-            $push: { 
-                history: { 
-                    type: '📤 Withdrawal', 
-                    amount: `${amount.toFixed(2)} USDT`, 
-                    status: '⏳ Pending',
-                    address: address,
-                    id: transId 
-                } 
-            }
-        });
-
-        // 2. NOTIFY ADMINS
-        for (const adminId of admins) {
-            ctx.telegram.sendMessage(adminId, 
-                `💸 *NEW WITHDRAWAL REQ*\n\n` +
-                `👤 User: \`${ctx.from.id}\`\n` +
-                `💰 Amount: \`${amount.toFixed(4)}\` USDT\n` +
-                `🏦 Addr: \`${address}\`\n` +
-                `🆔 ID: \`${transId}\`\n\n` +
-                `To mark as paid:\n\`/paid ${ctx.from.id} ${amount}\``, 
-                { parse_mode: 'Markdown' }
-            );
-        }
-
-        ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
-    }
-});
 
 bot.action('view_history', async (ctx) => {
     const user = await User.findOne({ user_id: ctx.from.id });
@@ -1146,7 +1051,7 @@ process.on('unhandledRejection', (reason, promise) => {
 // Run the Ghost Validator automatically every 24 hours
 setInterval(() => {
     console.log("🤖 Scheduled Auto-Sweep starting...");
-    // Note: Since there is no 'ctx' in a timer, you'd modify the function 
+    await runGhostValidator(null);     // Note: Since there is no 'ctx' in a timer, you'd modify the function 
     // to log to console instead of replying to a message.
 }, 24 * 60 * 60 * 1000);
 
