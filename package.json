@@ -1,7 +1,7 @@
 {
   "name": "embt-hub-v2",
   "version": "1.0.0",
-  "description": "EMBT 3-Bot Ecosystem Gateway",
+  "description": "EMBT is a bot helps to grow",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,6 +11,7 @@
     "mongoose": "^8.3.2",
     "express": "^4.19.2",
     "dotenv": "^16.4.5",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "cors": "latest"
   }
 }
