@@ -8,7 +8,32 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
 // --- KEEP-ALIVE SYSTEM ---
 const https = require('https');
+const express = require('express');
+const cors = require('cors'); // npm install cors
+const app = express();
 
+app.use(cors()); // Allows your Vercel site to talk to Render
+app.use(express.json());
+
+// API to get User Info for the Mini App
+app.get('/api/user/:id', async (req, res) => {
+    const userId = req.params.id;
+    const user = await db.collection('users').findOne({ user_id: parseInt(userId) });
+    
+    if (user) {
+        res.json({
+            balance: user.balance,
+            referrals: user.referrals,
+            isAdmin: userId === "7329000880" // Your ID
+        });
+    } else {
+        res.status(404).send("User not found");
+    }
+});
+
+// Start the server (Render usually gives you a PORT)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
 setInterval(() => {
     // Replace 'your-app-name' with your actual Render URL
     https.get('https://embt-gateway.onrender.com', (res) => {
