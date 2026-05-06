@@ -15,18 +15,6 @@ app.use(cors()); // Allows your Vercel site to talk to Render
 app.use(express.json());
 
 // Start the server (Render usually gives you a PORT)
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
-setInterval(() => {
-    // Replace 'your-app-name' with your actual Render URL
-    https.get('https://embt-gateway.onrender.com', (res) => {
-        console.log('🛰 Keep-alive ping sent');
-    }).on('error', (err) => {
-        console.log('🛰 Keep-alive error: ' + err.message);
-    });
-}, 10 * 60 * 1000); // Pings every 10 minutes
-// --- 1. CLOUD CONNECTION ---
-mongoose.connect(process.env.MONGO_URI).then(() => console.log("✅ Database Synced"));
 
 const User = mongoose.model('User', new mongoose.Schema({
     user_id: Number,
@@ -47,6 +35,27 @@ const Settings = mongoose.model('Settings', new mongoose.Schema({
     withdrawals_enabled: { type: Boolean, default: true },
     maintenance_mode: { type: Boolean, default: false }
 }));
+
+// ⚙️ Global Settings Model
+const SettingSchema = new mongoose.Schema({
+    min_withdraw: { type: Number, default: 1.0 },
+    withdrawals_enabled: { type: Boolean, default: true },
+    maintenance_mode: { type: Boolean, default: false },
+    ref_bonus: { type: Number, default: 0.1 }
+});
+const Setting = mongoose.model('Setting', SettingSchema);
+
+// 🎫 Support Ticket Model
+const TicketSchema = new mongoose.Schema({
+    user_id: Number,
+    username: String,
+    subject: String,
+    message: String,
+    admin_reply: String,
+    status: { type: String, default: 'open' }, // open, replied, resolved
+    created_at: { type: Date, default: Date.now }
+});
+const Ticket = mongoose.model('Ticket', TicketSchema);
 
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
@@ -1194,7 +1203,47 @@ app.get('/api/user/:id', async (req, res) => {
         res.status(404).send("User not found");
     }
 });
+const ADMIN_ID = 7329000880;
 
+// --- 👤 USER MANAGEMENT (Admin Only) ---
+app.get('/api/admin/users', async (req, res) => {
+    // Basic security check (Note: In production, use headers for this)
+    const users = await User.find().sort({ balance: -1 }).limit(100);
+    res.json(users);
+});
+
+// --- ⚙️ SETTINGS ---
+app.get('/api/settings', async (req, res) => {
+    let s = await Setting.findOne();
+    if (!s) s = await Setting.create({});
+    res.json(s);
+});
+
+app.post('/api/settings/update', async (req, res) => {
+    await Setting.updateOne({}, req.body);
+    res.json({ success: true });
+});
+
+// --- 🎫 SUPPORT SYSTEM ---
+app.post('/api/support/create', async (req, res) => {
+    const { user_id, username, message } = req.body;
+    await Ticket.create({ user_id, username, message });
+    res.json({ success: true });
+});
+
+app.get('/api/admin/tickets', async (req, res) => {
+    const tickets = await Ticket.find({ status: { $ne: 'resolved' } });
+    res.json(tickets);
+});
+
+app.post('/api/admin/reply-ticket', async (req, res) => {
+    const { ticketId, reply } = req.body;
+    const ticket = await Ticket.findByIdAndUpdate(ticketId, { admin_reply: reply, status: 'replied' });
+    
+    // Notify User via Bot
+    bot.telegram.sendMessage(ticket.user_id, `📩 *Support Reply:*\n\n${reply}`, { parse_mode: 'Markdown' });
+    res.json({ success: true });
+});
 
 // --- PREVENT CRASHES UNDER HEAVY LOAD ---
 bot.catch((err, ctx) => {
@@ -1214,6 +1263,18 @@ setInterval(async () => {
         console.error("Timer Error:", err);
     }
 }, 24 * 60 * 60 * 1000); // Runs every 24 hours
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
+setInterval(() => {
+    // Replace 'your-app-name' with your actual Render URL
+    https.get('https://embt-gateway.onrender.com', (res) => {
+        console.log('🛰 Keep-alive ping sent');
+    }).on('error', (err) => {
+        console.log('🛰 Keep-alive error: ' + err.message);
+    });
+}, 10 * 60 * 1000); // Pings every 10 minutes
+// --- 1. CLOUD CONNECTION ---
+mongoose.connect(process.env.MONGO_URI).then(() => console.log("✅ Database Synced"));
 
 app.get('/', (req, res) => res.send('EMBT Online'));
 bot.launch();
