@@ -14,22 +14,6 @@ const cors = require('cors'); // npm install cors
 app.use(cors()); // Allows your Vercel site to talk to Render
 app.use(express.json());
 
-// API to get User Info for the Mini App
-app.get('/api/user/:id', async (req, res) => {
-    const userId = req.params.id;
-    const user = await User.findOne({ user_id: parseInt(userId) });
-    
-    if (user) {
-        res.json({
-            balance: user.balance,
-            referrals: user.referrals,
-            isAdmin: userId === "7329000880" // Your ID
-        });
-    } else {
-        res.status(404).send("User not found");
-    }
-});
-
 // Start the server (Render usually gives you a PORT)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
@@ -1195,6 +1179,23 @@ bot.action('pay_penalty', async (ctx) => {
         ctx.answerCbQuery("⚠️ Error processing payment. Try /fix");
     }
 });
+// API to get User Info for the Mini App
+app.get('/api/user/:id', async (req, res) => {
+    const userId = req.params.id;
+    const user = await User.findOne({ user_id: parseInt(userId) });
+    
+    if (user) {
+        res.json({
+            balance: user.balance,
+            referrals: user.referrals,
+            isAdmin: userId === "7329000880" // Your ID
+        });
+    } else {
+        res.status(404).send("User not found");
+    }
+});
+
+
 // --- PREVENT CRASHES UNDER HEAVY LOAD ---
 bot.catch((err, ctx) => {
     console.log(`⚠️ Error for ${ctx.updateType}:`, err);
