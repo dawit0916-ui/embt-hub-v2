@@ -1179,12 +1179,16 @@ bot.catch((err, ctx) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.log('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
-// Run the Ghost Validator automatically every 24 hours
-setInterval(() => {
-    console.log("🤖 Scheduled Auto-Sweep starting...");
-    await runGhostValidator(null);     // Note: Since there is no 'ctx' in a timer, you'd modify the function 
-    // to log to console instead of replying to a message.
-}, 24 * 60 * 60 * 1000);
+// 🤖 Auto-Sweep Timer (Corrected)
+setInterval(async () => {
+    try {
+        console.log("🤖 Auto-Sweep started");
+        // We use 'async' above so 'await' works here
+        await runGhostValidator(null); 
+    } catch (err) {
+        console.error("Timer Error:", err);
+    }
+}, 24 * 60 * 60 * 1000); // Runs every 24 hours
 
 app.get('/', (req, res) => res.send('EMBT Online'));
 app.listen(process.env.PORT || 3000);
