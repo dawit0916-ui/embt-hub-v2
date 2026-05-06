@@ -8,7 +8,7 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
 // --- KEEP-ALIVE SYSTEM ---
 const https = require('https');
-const express = require('express');
+
 const cors = require('cors'); // npm install cors
 const app = express();
 
