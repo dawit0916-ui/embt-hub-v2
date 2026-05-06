@@ -1216,9 +1216,4 @@ setInterval(async () => {
 }, 24 * 60 * 60 * 1000); // Runs every 24 hours
 
 app.get('/', (req, res) => res.send('EMBT Online'));
-const PORT = process.env.PORT || 3000; // Use Render's port OR 3000 locally
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Server is running on port ${PORT}`);
-});
 bot.launch();
