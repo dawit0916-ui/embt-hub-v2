@@ -10,7 +10,6 @@ const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
 const https = require('https');
 
 const cors = require('cors'); // npm install cors
-const app = express();
 
 app.use(cors()); // Allows your Vercel site to talk to Render
 app.use(express.json());
@@ -1006,7 +1005,7 @@ bot.action('view_withdraw', async (ctx) => {
                     parse_mode: 'Markdown',
                     ...Markup.inlineKeyboard([
                         [Markup.button.callback('💳 Pay Penalty', 'pay_penalty')],
-                        [Markup.button.callback('⬅️ Back', 'admin_main')] // Using admin_main as a reset
+                        [Markup.button.callback('⬅️ Back', 'earn_more_menu')] // Using admin_main as a reset
                     ])
                 }
             );
@@ -1029,7 +1028,7 @@ bot.action('view_withdraw', async (ctx) => {
             { 
                 parse_mode: 'Markdown',
                 ...Markup.inlineKeyboard([
-                    [Markup.button.callback('❌ Cancel & Return', 'admin_main')]
+                    [Markup.button.callback('❌ Cancel & Return', 'earn_more_menu')]
                 ])
             }
         );
