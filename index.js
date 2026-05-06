@@ -17,7 +17,7 @@ app.use(express.json());
 // API to get User Info for the Mini App
 app.get('/api/user/:id', async (req, res) => {
     const userId = req.params.id;
-    const user = await db.collection('users').findOne({ user_id: parseInt(userId) });
+    const user = await User.findOne({ user_id: parseInt(userId) });
     
     if (user) {
         res.json({
