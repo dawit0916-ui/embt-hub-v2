@@ -781,42 +781,7 @@ bot.hears('💰 Balance', async (ctx) => {
     }
 });
 
-bot.action('view_withdraw', async (ctx) => {
-    const user = await User.findOne({ user_id: ctx.from.id });
-    const MIN_WITHDRAW = 1.0; // Set your minimum here
 
-    // 🚩 CHECK FOR RED FLAGS
-    if (user.red_flag) {
-        return ctx.replyWithMarkdown(
-            "🚩 *Withdrawal Locked!*\n\n" +
-            "Your account was flagged for leaving a channel. To unlock:\n" +
-            "1. Pay the **0.10 USDT** penalty.\n" +
-            "2. Or rejoin all tasks.\n\n" +
-            "Use /fix to see your status.",
-            Markup.inlineKeyboard([[Markup.button.callback('💳 Pay Penalty', 'pay_penalty')]])
-        );
-    }
-
-    // 💰 CHECK MINIMUM BALANCE
-    if (user.balance < MIN_WITHDRAW) {
-        return ctx.answerCbQuery(`⚠️ Minimum withdrawal is ${MIN_WITHDRAW} USDT.`, { show_alert: true });
-    }
-    // Inside your user withdrawal handler
-const s = await getSettings();
-if (!s.withdrawals_enabled) {
-    return ctx.reply("⚠️ Withdrawals are temporarily paused for maintenance. Check back later!");
-}
-    // SET STATE TO WAIT FOR WALLET
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_wallet' });
-    
-    ctx.editMessageText(
-        `🏦 *Withdrawal Request*\n\n` +
-        `Available: \`${user.balance.toFixed(4)}\` USDT\n` +
-        `Network: *USDT (BEP20)*\n\n` +
-        `📥 *Send your wallet address now:*`,
-        { parse_mode: 'Markdown' }
-    );
-});
 bot.command('admin', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return; // Hidden from regular users
 
@@ -993,10 +958,61 @@ bot.action('admin_settings', async (ctx) => {
     }
 });
 
-bot.action('set_min_wd', async (ctx) => {
-    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_min_wd' });
-    // Use that "showCancelBtn" we made earlier
-    await showCancelBtn(ctx, "💰 *New Minimum Withdrawal*\n\nEnter the value in USDT (e.g. 0.5):");
+bot.action('view_withdraw', async (ctx) => {
+    try {
+        const s = await getSettings(); // Fetch global settings first
+        const user = await User.findOne({ user_id: ctx.from.id });
+        const MIN_WITHDRAW = s?.min_withdraw || 1.0;
+
+        // 1️⃣ GLOBAL CHECK: Are withdrawals even on?
+        if (!s || !s.withdrawals_enabled) {
+            return ctx.answerCbQuery("⚠️ Withdrawals are temporarily paused for maintenance. Check back later!", { show_alert: true });
+        }
+
+        // 2️⃣ SECURITY CHECK: Is the user flagged?
+        if (user.red_flag) {
+            return ctx.editMessageText(
+                "🚩 *Withdrawal Locked!*\n\n" +
+                "Your account was flagged for leaving a channel. To unlock:\n" +
+                "1. Pay the penalty fee.\n" +
+                "2. Or rejoin all tasks.\n\n" +
+                "Use /fix to see your status.",
+                {
+                    parse_mode: 'Markdown',
+                    ...Markup.inlineKeyboard([
+                        [Markup.button.callback('💳 Pay Penalty', 'pay_penalty')],
+                        [Markup.button.callback('⬅️ Back', 'admin_main')] // Using admin_main as a reset
+                    ])
+                }
+            );
+        }
+
+        // 3️⃣ BALANCE CHECK: Do they have enough?
+        if (user.balance < MIN_WITHDRAW) {
+            return ctx.answerCbQuery(`⚠️ Minimum withdrawal is ${MIN_WITHDRAW} USDT.`, { show_alert: true });
+        }
+
+        // 4️⃣ STATE UPDATE: Start waiting for wallet
+        await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_wallet' });
+
+        // 5️⃣ UI: Ask for address and provide a CANCEL button
+        await ctx.editMessageText(
+            `🏦 *Withdrawal Request*\n\n` +
+            `Available: \`${user.balance.toFixed(4)}\` USDT\n` +
+            `Network: *USDT (BEP20)*\n\n` +
+            `📥 *Send your wallet address now:*`,
+            { 
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('❌ Cancel & Return', 'admin_main')]
+                ])
+            }
+        );
+
+    } catch (e) {
+        console.error("Withdraw Menu Error:", e);
+        ctx.answerCbQuery("❌ Error: Could not open withdrawal menu.");
+    }
 });
 
 bot.action('admin_pending', async (ctx) => {
