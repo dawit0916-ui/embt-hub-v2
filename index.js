@@ -73,7 +73,7 @@ bot.use(async (ctx, next) => {
     if (s.maintenance_mode && ctx.from.id !== ADMIN_ID) {
         // Only respond to messages, ignore button clicks to save server resources
         if (ctx.message) {
-            return ctx.reply("🛠 *Bot Under Maintenance*\n\nWe are currently updating our systems to handle the 10,000+ user load. We will be back online shortly!", { parse_mode: 'Markdown' });
+            return ctx.reply("🛠 *Bot Under Maintenance*\n\nWe are currently updating our systems to handle the user load. We will be back online shortly!", { parse_mode: 'Markdown' });
         }
         return; // Silently ignore other interactions
     }
