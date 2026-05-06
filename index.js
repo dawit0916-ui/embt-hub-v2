@@ -206,18 +206,75 @@ bot.action(/^verify_tg_(.+)$/, async (ctx) => {
 bot.action('toggle_maint', async (ctx) => {
     try {
         const s = await getSettings();
+        if (!s) return ctx.answerCbQuery("❌ Settings database not found.");
+
         const newState = !s.maintenance_mode;
         
+        // 1. Update the database
         await Settings.updateOne({}, { $set: { maintenance_mode: newState } });
         
         ctx.answerCbQuery(`🛠 Maintenance Mode: ${newState ? 'ENABLED 🔴' : 'DISABLED 🟢'}`);
         
-        // Refresh the settings menu to show the updated status
-        return ctx.scene ? ctx.scene.enter('admin_settings') : ctx.editMessageText(ctx.callbackQuery.message.text, {
-             reply_markup: ctx.callbackQuery.message.reply_markup // Just a quick UI refresh
+        // 2. REBUILD THE UI (This makes the change visible immediately)
+        const settingsMsg = 
+            `⚙️ *Bot Configuration*\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `💰 *Min Withdraw:* ${s.min_withdraw} USDT\n` +
+            `🎁 *Ref Bonus:* ${s.ref_bonus} USDT\n` +
+            `🚫 *Penalty Fee:* ${s.penalty_fee} USDT\n\n` +
+            `🛠 *Maintenance:* ${newState ? 'ON 🔴' : 'OFF 🟢'}`;
+
+        const buttons = [
+            [Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), Markup.button.callback('🎁 Ref Bonus', 'set_ref')],
+            [Markup.button.callback('🚫 Set Penalty', 'set_penalty')],
+            [Markup.button.callback(newState ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
+            [Markup.button.callback('⬅️ Back', 'admin_main')]
+        ];
+
+        // 3. Edit the current message with the new status
+        await ctx.editMessageText(settingsMsg, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
         });
+
     } catch (e) {
+        console.error("Maintenance Toggle Error:", e);
         ctx.answerCbQuery("❌ Failed to toggle maintenance.");
+    }
+});
+
+bot.action(/^toggle_task_(.+)$/, async (ctx) => {
+    try {
+        const taskId = ctx.match[1];
+        const task = await Task.findOne({ id: taskId });
+
+        if (!task) return ctx.answerCbQuery("❌ Task not found.");
+
+        const newState = !task.enabled;
+        
+        // 1. Update the database
+        await Task.updateOne({ id: taskId }, { $set: { enabled: newState } });
+
+        // 2. Alert the Admin
+        ctx.answerCbQuery(`Task is now ${newState ? 'ENABLED 🟢' : 'DISABLED 🔴'}`);
+
+        // 3. UI REFRESH: Re-fetch tasks and update the buttons
+        const tasks = await Task.find().limit(10);
+        const buttons = tasks.map(t => [
+            Markup.button.callback(`${t.enabled ? '🟢' : '🔴'} ${t.name}`, `toggle_task_${t.id}`)
+        ]);
+        
+        buttons.push([Markup.button.callback('➕ Add New Task', 'admin_add_task')]);
+        buttons.push([Markup.button.callback('⬅️ Back', 'admin_main')]);
+
+        await ctx.editMessageText("📋 *Task Management*\n🟢 = Visible to users\n🔴 = Hidden from users\n\nClick a task to toggle its status:", {
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard(buttons)
+        });
+
+    } catch (error) {
+        console.error("Toggle Task Error:", error);
+        ctx.answerCbQuery("❌ Error updating task.");
     }
 });
 // --- 2. EARN MORE (CATEGORY MENU) ---
@@ -368,10 +425,41 @@ bot.action('admin_broadcast', async (ctx) => {
 
 // Toggle Withdrawal Logic
 bot.action('toggle_withdrawals', async (ctx) => {
-    const s = await getSettings();
-    await Settings.updateOne({}, { $set: { withdrawals_enabled: !s.withdrawals_enabled } });
-    ctx.answerCbQuery(`Withdrawals ${s.withdrawals_enabled ? 'Locked' : 'Unlocked'}`);
-    const adminSecurityHandler = bot.listeners().find(l => l.name === 'admin_security'); // Refresh menu
+    try {
+        const s = await getSettings();
+        if (!s) return ctx.answerCbQuery("❌ Settings not found.");
+
+        const newState = !s.withdrawals_enabled;
+
+        // 1. Update the database
+        await Settings.updateOne({}, { $set: { withdrawals_enabled: newState } });
+
+        // 2. Alert the Admin (Using the NEW state)
+        ctx.answerCbQuery(`Withdrawals are now ${newState ? 'UNLOCKED 🔓' : 'LOCKED 🔒'}`);
+
+        // 3. REBUILD THE SECURITY UI
+        const securityMsg = 
+            `🚩 *Security & Enforcement*\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `🏦 *Withdrawals:* ${newState ? 'ENABLED 🟢' : 'LOCKED 🔴'}\n` +
+            `🕵️ *Validator:* System Ready`;
+
+        const buttons = [
+            [Markup.button.callback(newState ? '🔒 Lock Withdrawals' : '🔓 Unlock Withdrawals', 'toggle_withdrawals')],
+            [Markup.button.callback('🧹 Run /sweep (Ghost)', 'run_sweep')],
+            [Markup.button.callback('⬅️ Back', 'admin_main')]
+        ];
+
+        // 4. Update the menu message
+        await ctx.editMessageText(securityMsg, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
+        });
+
+    } catch (e) {
+        console.error("Toggle Withdrawals Error:", e);
+        ctx.answerCbQuery("❌ Error toggling withdrawals.");
+    }
 });
 
 bot.on('text', async (ctx, next) => {
@@ -782,7 +870,10 @@ bot.action('admin_tasks', async (ctx) => {
     });
 });
 
-
+bot.action('run_sweep', async (ctx) => {
+    ctx.answerCbQuery("🧹 Starting Ghost Validator...");
+    return runGhostValidator(ctx);
+});
 
 bot.command('paid', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return;
@@ -858,6 +949,56 @@ bot.on('photo', async (ctx) => {
         console.error("Photo Handling Error:", e);
     }
 });
+
+bot.action('admin_settings', async (ctx) => {
+    try {
+        // 1. IMPORTANT: Clear any pending input states so the menu works fresh
+        await User.updateOne({ user_id: ctx.from.id }, { $set: { current_state: null } });
+
+        const s = await getSettings();
+        
+        // 2. Safety check: If DB fails, try to alert the admin
+        if (!s) {
+            return ctx.answerCbQuery("❌ Database Error: Could not load settings.");
+        }
+
+        const settingsMsg = 
+            `⚙️ *Bot Configuration*\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `💰 *Min Withdraw:* \`${s.min_withdraw}\` USDT\n` +
+            `🎁 *Ref Bonus:* \`${s.ref_bonus}\` USDT\n` +
+            `🚫 *Penalty Fee:* \`${s.penalty_fee}\` USDT\n\n` +
+            `🛠 *Maintenance:* ${s.maintenance_mode ? 'ON 🔴' : 'OFF 🟢'}\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `_Click a button below to update values._`;
+
+        const buttons = [
+            [
+                Markup.button.callback('💵 Min Withdraw', 'set_min_wd'), 
+                Markup.button.callback('🎁 Ref Bonus', 'set_ref')
+            ],
+            [Markup.button.callback('🚫 Set Penalty', 'set_penalty')],
+            [Markup.button.callback(s.maintenance_mode ? '🟢 Disable Maintenance' : '🔴 Enable Maintenance', 'toggle_maint')],
+            [Markup.button.callback('⬅️ Back to Admin', 'admin_main')]
+        ];
+
+        await ctx.editMessageText(settingsMsg, { 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
+        });
+
+    } catch (e) {
+        console.error("Settings Menu Error:", e);
+        ctx.answerCbQuery("❌ UI Error. Check logs.");
+    }
+});
+
+bot.action('set_min_wd', async (ctx) => {
+    await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_min_wd' });
+    // Use that "showCancelBtn" we made earlier
+    await showCancelBtn(ctx, "💰 *New Minimum Withdrawal*\n\nEnter the value in USDT (e.g. 0.5):");
+});
+
 bot.action('admin_pending', async (ctx) => {
     try {
         // This pulls the same logic we built for the /pending command
