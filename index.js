@@ -60,7 +60,16 @@ const Ticket = mongoose.model('Ticket', TicketSchema);
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
 }));
-
+const WithdrawSchema = new mongoose.Schema({
+    user_id: Number,
+    username: String,
+    amount: Number,
+    address: String,
+    method: String, // e.g., "BEP20"
+    status: { type: String, default: 'pending' }, // pending, approved, rejected
+    created_at: { type: Date, default: Date.now }
+});
+const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 // --- ROBUST SETTINGS FETCHER ---
 async function getSettings() {
@@ -572,12 +581,9 @@ bot.action('back_to_earn', (ctx) => {
 });
 // --- 2. START & RECOVERY ---
 bot.start(async (ctx) => {
-    let user = await User.findOne({ user_id: ctx.from.id });
-    if (!user) {
-        user = new User({ user_id: ctx.from.id });
-        await user.save();
-    }
-    ctx.replyWithMarkdown("🚀 *EMBT Center Launched!* \nReady to earn USDT?", mainMenu);
+    const payload = ctx.startPayload; // This is the user ID from the link
+    const newUser = ctx.from;
+    
 });
 
 // --- 3. TASK LISTING WITH IDs ---
@@ -1243,6 +1249,111 @@ app.post('/api/admin/reply-ticket', async (req, res) => {
     // Notify User via Bot
     bot.telegram.sendMessage(ticket.user_id, `📩 *Support Reply:*\n\n${reply}`, { parse_mode: 'Markdown' });
     res.json({ success: true });
+});
+
+// 1. Claim Task Reward
+app.post('/api/tasks/claim', async (req, res) => {
+    const { user_id, task_id, reward } = req.body;
+
+    try {
+        const user = await User.findOne({ user_id: parseInt(user_id) });
+
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        // 🛑 Check if already claimed
+        if (user.completed_tasks.includes(task_id)) {
+            return res.status(400).json({ error: "Task already completed!" });
+        }
+
+        // ✅ Add reward and mark as completed
+        user.balance += parseFloat(reward);
+        user.completed_tasks.push(task_id);
+        await user.save();
+
+        res.json({ success: true, new_balance: user.balance });
+
+    } catch (error) {
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+
+// 2. Submit Withdrawal
+app.post('/api/withdraw', async (req, res) => {
+    const { user_id, address, amount } = req.body;
+    // logic: Deduct balance and create a "Pending" record for Admin to see
+    // Then notify the Admin via Bot:
+    bot.telegram.sendMessage(ADMIN_ID, `⚠️ *Withdrawal Alert*\nUser: ${user_id}\nAmount: ${amount}\nAddress: ${address}`);
+    res.json({ success: true });
+});
+
+// --- USER: Submit Request ---
+app.post('/api/withdraw/request', async (req, res) => {
+    const { user_id, amount, address, method } = req.body;
+    
+    const user = await User.findOne({ user_id });
+    const settings = await Setting.findOne() || { min_withdraw: 1.0 };
+
+    if (user.balance < amount) return res.json({ success: false, error: "Insufficient balance" });
+    if (amount < settings.min_withdraw) return res.json({ success: false, error: `Min withdraw is ${settings.min_withdraw} USDT` });
+
+    // Deduct balance immediately so they can't spend it twice
+    user.balance -= amount;
+    await user.save();
+
+    await Withdraw.create({ user_id, username: user.username, amount, address, method });
+
+    // Notify Admin via Bot
+    bot.telegram.sendMessage(ADMIN_ID, `⚠️ *NEW WITHDRAWAL REQUEST*\n\nUser: ${user_id}\nAmount: ${amount} USDT\nAddress: \`${address}\``, { parse_mode: 'Markdown' });
+
+    res.json({ success: true });
+});
+
+// --- ADMIN: List Pending ---
+app.get('/api/admin/withdrawals', async (req, res) => {
+    const pending = await Withdraw.find({ status: 'pending' });
+    res.json(pending);
+});
+
+// --- ADMIN: Approve/Reject ---
+app.post('/api/admin/withdraw-action', async (req, res) => {
+    const { requestId, action } = req.body; // action: 'approved' or 'rejected'
+    
+    const request = await Withdraw.findById(requestId);
+    if (!request) return res.json({ success: false });
+
+    request.status = action;
+    await request.save();
+
+    if (action === 'rejected') {
+        // Refund the user
+        await User.updateOne({ user_id: request.user_id }, { $inc: { balance: request.amount } });
+        bot.telegram.sendMessage(request.user_id, `❌ *Withdrawal Rejected*\nYour ${request.amount} USDT has been refunded.`);
+    } else {
+        bot.telegram.sendMessage(request.user_id, `✅ *Withdrawal Approved!*\nYour ${request.amount} USDT is on the way to your wallet.`);
+    }
+
+    res.json({ success: true });
+});
+
+// --- USER: Get Referral List ---
+app.get('/api/user/referrals/:id', async (req, res) => {
+    try {
+        const userId = parseInt(req.params.id);
+        
+        // Find all users who were invited by this ID
+        const friends = await User.find({ referrer_id: userId }).select('username first_name created_at balance');
+        
+        res.json({
+            count: friends.length,
+            friends: friends.map(f => ({
+                name: f.first_name || f.username || "Anonymous",
+                date: f.created_at,
+                bonus: 0.1 // You can make this dynamic based on your settings
+            }))
+        });
+    } catch (error) {
+        res.status(500).json({ error: "Could not fetch friends" });
+    }
 });
 
 // --- PREVENT CRASHES UNDER HEAVY LOAD ---
