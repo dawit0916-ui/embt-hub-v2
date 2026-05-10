@@ -1373,14 +1373,7 @@ app.post('/api/tasks/claim', async (req, res) => {
     }
 });
 
-// 2. Submit Withdrawal
-app.post('/api/withdraw', async (req, res) => {
-    const { user_id, address, amount } = req.body;
-    // logic: Deduct balance and create a "Pending" record for Admin to see
-    // Then notify the Admin via Bot:
-    bot.telegram.sendMessage(ADMIN_ID, `⚠️ *Withdrawal Alert*\nUser: ${user_id}\nAmount: ${amount}\nAddress: ${address}`);
-    res.json({ success: true });
-});
+
 // --- USER: Submit Request ---
 app.post('/api/withdraw/request', async (req, res) => {
     const { user_id, amount, address, method } = req.body;
@@ -1450,6 +1443,18 @@ app.get('/api/user/referrals/:id', async (req, res) => {
     }
 });
 
+app.get('/api/secure/available-tasks', validateInitData, async (req, res) => {
+    try {
+        const user = await User.findOne({ user_id: req.tgUser.id });
+        // Get all tasks that are NOT in the user's completed_tasks array
+        const tasks = await Task.find({ 
+            id: { $nin: user.completed_tasks } 
+        });
+        res.json(tasks);
+    } catch (e) {
+        res.status(500).json({ error: "Failed to load tasks" });
+    }
+});
 // --- PREVENT CRASHES UNDER HEAVY LOAD ---
 bot.catch((err, ctx) => {
     console.log(`⚠️ Error for ${ctx.updateType}:`, err);
