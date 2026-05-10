@@ -38,14 +38,6 @@ const Settings = mongoose.model('Settings', new mongoose.Schema({
     maintenance_mode: { type: Boolean, default: false }
 }));
 
-// ⚙️ Global Settings Model
-const SettingSchema = new mongoose.Schema({
-    min_withdraw: { type: Number, default: 1.0 },
-    withdrawals_enabled: { type: Boolean, default: true },
-    maintenance_mode: { type: Boolean, default: false },
-    ref_bonus: { type: Number, default: 0.1 }
-});
-const Setting = mongoose.model('Setting', SettingSchema);
 
 // 🎫 Support Ticket Model
 const TicketSchema = new mongoose.Schema({
@@ -1521,6 +1513,33 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
     }
 
     res.json({ success: true });
+});
+// --- 📣 MASS BROADCAST ---
+app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
+    const { message } = req.body;
+    if (!message) return res.status(400).json({ error: "Message cannot be empty" });
+
+    try {
+        const users = await User.find({}, 'user_id'); // Fetch all user IDs
+        let successCount = 0;
+
+        // Send messages in the background
+        users.forEach(async (user, index) => {
+            // We add a slight delay (75ms) between messages to avoid Telegram rate limits
+            setTimeout(async () => {
+                try {
+                    await bot.telegram.sendMessage(user.user_id, message, { parse_mode: 'HTML' });
+                    successCount++;
+                } catch (err) {
+                    console.log(`Failed to send to ${user.user_id}`);
+                }
+            }, index * 75); 
+        });
+
+        res.json({ success: true, total: users.length });
+    } catch (e) {
+        res.status(500).json({ error: "Broadcast failed" });
+    }
 });
 // 🤖 Auto-Sweep Timer (Corrected)
 setInterval(async () => {
