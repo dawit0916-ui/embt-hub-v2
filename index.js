@@ -25,7 +25,10 @@ const User = mongoose.model('User', new mongoose.Schema({
     red_flag: { type: Boolean, default: false },
     referralCount: { type: Number, default: 0 },
     history: [{ type: Object }], // 👈 Added this
-    createdAt: { type: Date, default: Date.now }
+    createdAt: { type: Date, default: Date.now },
+referral_tasks_done: { type: Number, default: 0 },
+referral_paid: { type: Boolean, default: false },
+referred_by: { type: Number, default: null } // Stores the ID of who invited them
 }));
 const Settings = mongoose.model('Settings', new mongoose.Schema({
     min_withdraw: { type: Number, default: 0.2 },
@@ -560,6 +563,22 @@ bot.on('text', async (ctx, next) => {
         ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
                                          }
     
+});
+bot.start(async (ctx) => {
+    const referrerId = ctx.startPayload; // This is the ID from the link
+    const userId = ctx.from.id;
+
+    let user = await User.findOne({ user_id: userId });
+
+    if (!user) {
+        user = new User({
+            user_id: userId,
+            referred_by: referrerId ? parseInt(referrerId) : null,
+            // ... other default fields
+        });
+        await user.save();
+    }
+    // ... launch mini app logic
 });
 // Trigger the input state
 bot.action('set_penalty', async (ctx) => {
@@ -1462,6 +1481,46 @@ bot.catch((err, ctx) => {
 
 process.on('unhandledRejection', (reason, promise) => {
     console.log('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
+    const { taskId } = req.body;
+    const userId = req.tgUser.id;
+    const settings = await getSettings(); // Get admin-set amounts
+
+    const user = await User.findOne({ user_id: userId });
+    
+    // 1. Standard task logic (add balance to current user)
+    await User.updateOne(
+        { user_id: userId },
+        { 
+            $inc: { balance: task.reward, referral_tasks_done: 1 },
+            $push: { completed_tasks: taskId }
+        }
+    );
+
+    // 2. CHECK REFERRAL COMMISSION (Every Task)
+    if (user.referred_by) {
+        const commission = task.reward * (settings.ref_commission_percent / 100);
+        await User.updateOne(
+            { user_id: user.referred_by },
+            { $inc: { balance: commission } }
+        );
+    }
+
+    // 3. CHECK REFERRAL MILESTONE (The "Invite Bonus")
+    // If they just hit 3 tasks and haven't triggered the bonus yet
+    if (user.referred_by && !user.referral_paid && (user.referral_tasks_done + 1) >= 3) {
+        await User.updateOne(
+            { user_id: user.referred_by },
+            { $inc: { balance: settings.ref_bonus_amount } }
+        );
+        await User.updateOne({ user_id: userId }, { $set: { referral_paid: true } });
+
+        // Notify the referrer via Bot
+        bot.telegram.sendMessage(user.referred_by, `🎊 **Referral Milestone!** Your friend completed 3 tasks. You received **${settings.ref_bonus_amount} USDT**!`);
+    }
+
+    res.json({ success: true });
 });
 // 🤖 Auto-Sweep Timer (Corrected)
 setInterval(async () => {
