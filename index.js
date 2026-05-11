@@ -516,11 +516,9 @@ bot.on('text', async (ctx, next) => {
     }
 
     // 🏦 WALLET
-    if (state === 'awaiting_wallet') {
-       if (!address.startsWith('0x') || address.length < 40) {
-           const address = ctx.message.text.trim();
-            return ctx.reply("❌ Invalid Address! Please send a valid USDT (BEP20) wallet.");
-        }
+if (state === 'awaiting_wallet') {
+   const address = ctx.message.text.trim();
+   if (!address.startsWith('0x') || address.length < 42) { // BEP20 is usually 42 chars
 
         const amount = user.balance;
         const transId = 'W' + Math.floor(Math.random() * 100000);
@@ -1199,6 +1197,27 @@ bot.action('pay_penalty', async (ctx) => {
     }
 });
 const crypto = require('crypto');
+const validateInitData = (req, res, next) => {
+    const initData = req.headers['x-telegram-init-data'];
+    if (!initData) return res.status(401).json({ error: "No init data provided" });
+
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    urlParams.sort();
+
+    const dataCheckString = decodeURIComponent(urlParams.toString().replace(/\&/g, '\n'));
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
+    const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (hmac === hash) {
+        req.tgUser = JSON.parse(urlParams.get('user'));
+        next();
+    } else {
+        res.status(403).json({ error: "Invalid data signature" });
+    }
+};
+
 
 const validateAdmin = async (req, res, next) => {
     const initData = req.headers['x-telegram-init-data'];
@@ -1327,13 +1346,13 @@ app.get('/api/admin/users', async (req, res) => {
 
 // --- ⚙️ SETTINGS ---
 app.get('/api/settings', async (req, res) => {
-    let s = await Setting.findOne();
-    if (!s) s = await Setting.create({});
+    let s = await Settings.findOne();
+    if (!s) s = await Settings.create({});
     res.json(s);
 });
 
 app.post('/api/settings/update', async (req, res) => {
-    await Setting.updateOne({}, req.body);
+    await Settings.updateOne({}, req.body);
     res.json({ success: true });
 });
 
@@ -1390,7 +1409,7 @@ app.post('/api/withdraw/request', async (req, res) => {
     const { user_id, amount, address, method } = req.body;
     
     const user = await User.findOne({ user_id });
-    const settings = await Setting.findOne() || { min_withdraw: 1.0 };
+    const settings = await Settings.findOne() || { min_withdraw: 1.0 };
 
     if (user.balance < amount) return res.json({ success: false, error: "Insufficient balance" });
     if (amount < settings.min_withdraw) return res.json({ success: false, error: `Min withdraw is ${settings.min_withdraw} USDT` });
