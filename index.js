@@ -551,8 +551,8 @@ if (state === 'awaiting_wallet') {
         }
 
         ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
-                                         
-    
+                                                                               
+   }
 });
 bot.start(async (ctx) => {
     const referrerId = ctx.startPayload; // This is the ID from the link
@@ -1324,22 +1324,28 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
 // Change this in your index.js
 app.get('/api/user/:id', async (req, res) => {
     try {
-        const userId = parseInt(req.params.id);
+        // Use String comparison or ensure Number conversion is clean
+        const userId = Number(req.params.id); 
         const user = await User.findOne({ user_id: userId });
         
         if (user) {
             res.json({
-                balance: user.balance,
-                referrals: user.referralCount, // Fixed to match model property
-                isAdmin: admins.includes(userId) // Use your admins array
+                balance: user.balance || 0,
+                referrals: user.referralCount || 0, // Ensure this matches your Model
+                total_earned: user.total_earned || 0,
+                isAdmin: admins.includes(userId)
             });
         } else {
-            res.status(404).json({ error: "User not found" });
+            // If user isn't found, don't just 404, return a default object 
+            // so the Mini App doesn't crash/show Sync Error
+            res.json({ balance: 0, referrals: 0, isAdmin: false });
         }
     } catch (err) {
+        console.error("API Error:", err);
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 const ADMIN_ID = 7329000880;
 
