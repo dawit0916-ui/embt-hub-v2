@@ -1321,20 +1321,26 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
     }
 });
 
+// Change this in your index.js
 app.get('/api/user/:id', async (req, res) => {
-    const userId = req.params.id;
-    const user = await User.findOne({ user_id: parseInt(userId) });
-    
-    if (user) {
-        res.json({
-            balance: user.balance,
-            referrals: user.referrals,
-            isAdmin: userId === "7329000880" // Your ID
-        });
-    } else {
-        res.status(404).send("User not found");
+    try {
+        const userId = parseInt(req.params.id);
+        const user = await User.findOne({ user_id: userId });
+        
+        if (user) {
+            res.json({
+                balance: user.balance,
+                referrals: user.referralCount, // Fixed to match model property
+                isAdmin: admins.includes(userId) // Use your admins array
+            });
+        } else {
+            res.status(404).json({ error: "User not found" });
+        }
+    } catch (err) {
+        res.status(500).json({ error: "Server error" });
     }
 });
+
 const ADMIN_ID = 7329000880;
 
 // --- 👤 USER MANAGEMENT (Admin Only) ---
