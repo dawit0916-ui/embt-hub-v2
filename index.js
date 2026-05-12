@@ -551,7 +551,7 @@ if (state === 'awaiting_wallet') {
         }
 
         ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
-                                         }
+                                         
     
 });
 bot.start(async (ctx) => {
