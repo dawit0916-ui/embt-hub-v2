@@ -64,6 +64,25 @@ const WithdrawSchema = new mongoose.Schema({
     created_at: { type: Date, default: Date.now }
 });
 const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
+
+const NotificationSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    message: { type: String, required: true },
+    type: { type: String, enum: ['personal', 'system'], default: 'system' },
+    targetType: { 
+        type: String, 
+        enum: ['all', 'new_members', 'specific_member', 'all_members'], 
+        required: true 
+    },
+    targetUserId: { type: Number, default: null }, // Used only if specific_member is selected
+    createdAt: { type: Date, default: Date.now }
+});
+
+const UserNotificationStateSchema = new mongoose.Schema({
+    userId: { type: Number, required: true },
+    notificationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Notification' },
+    isRead: { type: Boolean, default: false }
+});
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 // --- ROBUST SETTINGS FETCHER ---
 async function getSettings() {
@@ -1484,7 +1503,50 @@ app.get('/api/user/referrals/:id', async (req, res) => {
         res.status(500).json({ error: "Could not fetch friends" });
     }
 });
+router.post('/api/admin/notifications/send', async (req, res) => {
+    try {
+        const { title, message, type, targetType, targetUserId } = req.body;
+        
+        const newNotif = new Notification({
+            title,
+            message,
+            type,
+            targetType,
+            targetUserId: targetType === 'specific_member' ? parseInt(targetUserId) : null
+        });
+        await newNotif.save();
 
+        // Optional: Send real-time updates via WebSockets/Socket.io here if connected
+        
+        res.json({ success: true, message: "Notification targeted and saved successfully." });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+router.get('/api/secure/notifications', async (req, res) => {
+    try {
+        const userId = req.user.id; // From your Telegram Auth middleware
+        const registrationDate = req.user.createdAt; // Assuming your user model tracks creation
+        
+        // Fetch matching targeted notifications
+        const eligibleNotifications = await Notification.find({
+            $or: [
+                { targetType: 'all' },
+                { targetType: 'all_members' },
+                { targetType: 'specific_member', targetUserId: userId },
+                { 
+                    targetType: 'new_members', 
+                    createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Example: Joined within last 7 days
+                }
+            ]
+        }).sort({ createdAt: -1 });
+
+        // Merge read state from UserNotificationState...
+        res.json(eligibleNotifications);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 app.get('/api/secure/available-tasks', validateInitData, async (req, res) => {
     try {
         const user = await User.findOne({ user_id: req.tgUser.id });
