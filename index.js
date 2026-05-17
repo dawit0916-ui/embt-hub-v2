@@ -29,14 +29,14 @@ const User = mongoose.model('User', new mongoose.Schema({
 referral_tasks_done: { type: Number, default: 0 },
 referral_paid: { type: Boolean, default: false },
 referred_by: { type: Number, default: null } // Stores the ID of who invited them
-}));
+                });
 const Settings = mongoose.model('Settings', new mongoose.Schema({
     min_withdraw: { type: Number, default: 0.2 },
     ref_bonus: { type: Number, default: 0.1 },
     penalty_fee: { type: Number, default: 0.1 },
     withdrawals_enabled: { type: Boolean, default: true },
     maintenance_mode: { type: Boolean, default: false }
-}));
+});
 
 
 // 🎫 Support Ticket Model
@@ -53,7 +53,7 @@ const Ticket = mongoose.model('Ticket', TicketSchema);
 
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
-}));
+    });
 const WithdrawSchema = new mongoose.Schema({
     user_id: Number,
     username: String,
