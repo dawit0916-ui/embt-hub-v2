@@ -65,24 +65,34 @@ const WithdrawSchema = new mongoose.Schema({
 });
 const Withdraw = mongoose.model('Withdraw', WithdrawSchema);
 
+// 1. Notification Schema Definition
 const NotificationSchema = new mongoose.Schema({
     title: { type: String, required: true },
     message: { type: String, required: true },
     type: { type: String, enum: ['personal', 'system'], default: 'system' },
-    targetType: { 
-        type: String, 
-        enum: ['all', 'new_members', 'specific_member', 'all_members'], 
-        required: true 
+    targetType: {
+        type: String,
+        enum: ['all', 'new_members', 'specific_member', 'all_members'],
+        required: true
     },
-    targetUserId: { type: Number, default: null }, // Used only if specific_member is selected
+    targetUserId: { type: Number, default: null },
     createdAt: { type: Date, default: Date.now }
 });
 
+// 🚨 ADD THIS LINE TO FIX THE ERROR:
+const Notification = mongoose.model('Notification', NotificationSchema);
+
+
+// 2. User Notification State Schema Definition
 const UserNotificationStateSchema = new mongoose.Schema({
     userId: { type: Number, required: true },
-    notificationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Notification' },
+    notificationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Notification', required: true },
     isRead: { type: Boolean, default: false }
 });
+
+// 🚨 ADD THIS LINE JUST IN CASE YOU MISSED IT TOO:
+const UserNotificationState = mongoose.model('UserNotificationState', UserNotificationStateSchema);
+
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 // --- ROBUST SETTINGS FETCHER ---
 async function getSettings() {
