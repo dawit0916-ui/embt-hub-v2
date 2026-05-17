@@ -498,7 +498,6 @@ bot.action('toggle_withdrawals', async (ctx) => {
         ctx.answerCbQuery("❌ Error toggling withdrawals.");
     }
 });
-
 bot.on('text', async (ctx, next) => {
     const user = await User.findOne({ user_id: ctx.from.id });
     if (!user || !user.current_state) return next();
@@ -535,9 +534,11 @@ bot.on('text', async (ctx, next) => {
     }
 
     // 🏦 WALLET
-if (state === 'awaiting_wallet') {
-   const address = ctx.message.text.trim();
-   if (!address.startsWith('0x') || address.length < 42) { // BEP20 is usually 42 chars
+    if (state === 'awaiting_wallet') {
+        const address = ctx.message.text.trim();
+        if (!address.startsWith('0x') || address.length < 42) { 
+            return ctx.reply("❌ Invalid BEP20 address. Please enter a valid address starting with 0x:");
+        }
 
         const amount = user.balance;
         const transId = 'W' + Math.floor(Math.random() * 100000);
@@ -558,76 +559,85 @@ if (state === 'awaiting_wallet') {
 
         // 2. NOTIFY ADMINS
         for (const adminId of admins) {
-            ctx.telegram.sendMessage(adminId, 
-                `💸 *NEW WITHDRAWAL REQ*\n\n` +
-                `👤 User: \`${ctx.from.id}\`\n` +
-                `💰 Amount: \`${amount.toFixed(4)}\` USDT\n` +
-                `🏦 Addr: \`${address}\`\n` +
-                `🆔 ID: \`${transId}\`\n\n` +
-                `To mark as paid:\n\`/paid ${ctx.from.id} ${amount}\``, 
-                { parse_mode: 'Markdown' }
-            );
+            try {
+                await ctx.telegram.sendMessage(adminId, 
+                    `💸 *NEW WITHDRAWAL REQ*\n\n` +
+                    `👤 User: \`${ctx.from.id}\`\n` +
+                    `💰 Amount: \`${amount.toFixed(4)}\` USDT\n` +
+                    `🏦 Addr: \`${address}\`\n` +
+                    `🆔 ID: \`${transId}\`\n\n` +
+                    `To mark as paid:\n\`/paid ${ctx.from.id} ${amount}\``, 
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (err) {}
         }
 
-        ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
-                                                                               
-   }
+        return ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
+    }
 });
+
 bot.start(async (ctx) => {
-    const referrerId = ctx.startPayload; // This is the ID from the link
+    const referrerId = ctx.startPayload; 
     const userId = ctx.from.id;
 
-    let user = await User.findOne({ user_id: userId });
+    try {
+        let user = await User.findOne({ user_id: userId });
 
-    if (!user) {
-        user = new User({
-            user_id: userId,
-            referred_by: referrerId ? parseInt(referrerId) : null,
-            // ... other default fields
-        });
-        await user.save();
+        if (!user) {
+            user = new User({
+                user_id: userId,
+                referred_by: referrerId ? parseInt(referrerId) : null,
+            });
+            await user.save();
+
+            // Handle referral credit counter
+            if (referrerId && !isNaN(parseInt(referrerId))) {
+                await User.updateOne(
+                    { user_id: parseInt(referrerId) },
+                    { $inc: { referralCount: 1 } }
+                );
+            }
+        }
+
+        // URL to your Mini App
+        const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app'; 
+
+        // 1. Send the welcome message and capture the message object
+        const sentMsg = await ctx.reply(
+            `👋 *Welcome to EMBT!*\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
+            {
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]
+                ])
+            }
+        );
+
+        // 2. Hide the message ID in current_state so the API knows what to delete later
+        await User.updateOne(
+            { user_id: userId }, 
+            { $set: { current_state: `delete_welcome_${sentMsg.message_id}` } }
+        );
+
+    } catch (error) {
+        console.error("Error in bot.start:", error);
+        ctx.reply("⚠️ Error initializing your dashboard. Please try /start again.");
     }
-    // ... launch mini app logic
 });
+
 // Trigger the input state
 bot.action('set_penalty', async (ctx) => {
     await User.updateOne({ user_id: ctx.from.id }, { current_state: 'awaiting_penalty_val' });
     ctx.reply("🔢 *Enter new Penalty Fee:* (e.g., 0.15)");
 });
 
-// Process the number entered
-
-// Back to Category Menu Handler
 bot.action('back_to_earn', (ctx) => {
     ctx.editMessageText("📂 *Select a Task Category:*", Markup.inlineKeyboard([
         [Markup.button.callback('📺 YouTube', 'cat_youtube'), Markup.button.callback('📢 Telegram', 'cat_telegram')],
         [Markup.button.callback('🐦 Twitter (X)', 'cat_twitter'), Markup.button.callback('🌐 Others', 'cat_other')]
     ]));
 });
-// --- 2. START & RECOVERY ---
-bot.start(async (ctx) => {
-    const payload = ctx.startPayload; // This is the user ID from the link
-    const newUser = ctx.from;
-    
-});
 
-// --- 3. TASK LISTING WITH IDs ---
-bot.action(/^cat_(.+)$/, async (ctx) => {
-    const platform = ctx.match[1];
-    const user = await User.findOne({ user_id: ctx.from.id });
-    const tasks = await Task.find({ type: platform, id: { $nin: user.completed_tasks } });
-    
-    if (tasks.length === 0) return ctx.answerCbQuery("📌 No tasks available.", { show_alert: true });
-
-    const buttons = tasks.map(t => [
-        Markup.button.callback(`💰 ${t.name} | ID: ${t.id}`, `view_task_${t.id}`)
-    ]);
-    buttons.push([Markup.button.callback('⬅️ Back', 'earn_more_menu')]);
-    
-    ctx.editMessageText(`📌 *Available ${platform.toUpperCase()} Tasks*`, Markup.inlineKeyboard(buttons));
-});
-
-// --- 4. ADMIN: DELETE TASK ---
 bot.command('delete', async (ctx) => {
     if (!admins.includes(ctx.from.id)) return;
     
@@ -947,11 +957,12 @@ bot.on('photo', async (ctx) => {
                     caption: `📄 *New Task Proof*\n\n👤 *User:* \`${ctx.from.id}\`\n🆔 *Task ID:* \`${taskId}\`\n\nReview this screenshot and select an action:`,
                     parse_mode: 'Markdown',
                     ...Markup.inlineKeyboard([
-                        [
-                            Markup.button.callback('✅ Approve', `admin_app_${taskId}_${ctx.from.id}`),
-                            Markup.button.callback('❌ Reject', `admin_rej_${ctx.from.id}`)
-                        ]
-                    ])
+    [
+        Markup.button.callback('✅ Approve', `admin_app_${taskId}_${ctx.from.id}`),
+        Markup.button.callback('❌ Reject', `admin_rej_${taskId}_${ctx.from.id}`) // 👈 Fixed here
+    ]
+])
+
                 });
             }
         }
@@ -1343,20 +1354,34 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
 // Change this in your index.js
 app.get('/api/user/:id', async (req, res) => {
     try {
-        // Use String comparison or ensure Number conversion is clean
         const userId = Number(req.params.id); 
         const user = await User.findOne({ user_id: userId });
         
         if (user) {
+            // 🧹 AUTO-CLEAR WELCOME MESSAGE LOGIC
+            if (user.current_state && user.current_state.startsWith('delete_welcome_')) {
+                const msgId = parseInt(user.current_state.split('_')[2]);
+                
+                // Trigger deletion asynchronously so it doesn't slow down your app loading speed
+                bot.telegram.deleteMessage(userId, msgId)
+                    .then(() => {
+                        console.log(`🧹 Successfully cleared welcome message ${msgId} for user ${userId}`);
+                    })
+                    .catch((err) => {
+                        console.log(`⚠️ Could not delete message (it might already be deleted or expired):`, err.message);
+                    });
+
+                // Reset the state back to null so it doesn't try to delete it again next time
+                await User.updateOne({ user_id: userId }, { $set: { current_state: null } });
+            }
+
             res.json({
                 balance: user.balance || 0,
-                referrals: user.referralCount || 0, // Ensure this matches your Model
+                referrals: user.referralCount || 0, 
                 total_earned: user.total_earned || 0,
                 isAdmin: admins.includes(userId)
             });
         } else {
-            // If user isn't found, don't just 404, return a default object 
-            // so the Mini App doesn't crash/show Sync Error
             res.json({ balance: 0, referrals: 0, isAdmin: false });
         }
     } catch (err) {
@@ -1364,6 +1389,7 @@ app.get('/api/user/:id', async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 
 const ADMIN_ID = 7329000880;
@@ -1503,7 +1529,7 @@ app.get('/api/user/referrals/:id', async (req, res) => {
         res.status(500).json({ error: "Could not fetch friends" });
     }
 });
-router.post('/api/admin/notifications/send', async (req, res) => {
+app.post('/api/admin/notifications/send', async (req, res) => {
     try {
         const { title, message, type, targetType, targetUserId } = req.body;
         
@@ -1523,7 +1549,7 @@ router.post('/api/admin/notifications/send', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-router.get('/api/secure/notifications', async (req, res) => {
+app.get('/api/secure/notifications', async (req, res) => {
     try {
         const userId = req.user.id; // From your Telegram Auth middleware
         const registrationDate = req.user.createdAt; // Assuming your user model tracks creation
@@ -1573,9 +1599,9 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
     const settings = await getSettings(); // Get admin-set amounts
 
     const user = await User.findOne({ user_id: userId });
-    
+    const task = await Task.findOne({ id: taskId }); // 👈 ADD THIS LINE
     // 1. Standard task logic (add balance to current user)
-    await User.updateOne(
+await User.updateOne(
         { user_id: userId },
         { 
             $inc: { balance: task.reward, referral_tasks_done: 1 },
@@ -1583,9 +1609,9 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         }
     );
 
-    // 2. CHECK REFERRAL COMMISSION (Every Task)
+    // 2. CHECK REFERRAL COMMISSION
     if (user.referred_by) {
-        const commission = task.reward * (settings.ref_commission_percent / 100);
+        const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
         await User.updateOne(
             { user_id: user.referred_by },
             { $inc: { balance: commission } }
