@@ -355,7 +355,7 @@ bot.hears('💸 Earn More', (ctx) => {
 async function runGhostValidator(ctx) {
     try {
         await ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
-        
+        if (ctx) await ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
         const users = await User.find({ red_flag: false }); 
         const tgTasks = await Task.find({ type: 'telegram' });
         const settings = await getSettings(); // Get your dynamic penalty fee
@@ -1091,8 +1091,9 @@ bot.action('view_withdraw', async (ctx) => {
             { 
                 parse_mode: 'Markdown',
                 ...Markup.inlineKeyboard([
-                    [Markup.button.callback('❌ Cancel & Return', '❌
-                ])
+    [Markup.button.callback('❌ Cancel & Return', 'back_to_earn')]
+])
+
             }
         );
 
@@ -1546,7 +1547,7 @@ app.get('/api/user/referrals/:id', async (req, res) => {
         const userId = parseInt(req.params.id);
         
         // Find all users who were invited by this ID
-        const friends = await User.find({ referrer_by: userId }).select('username first_name created_at balance');
+        const friends = await User.find({ referrer_by}).select('username first_name created_at balance');
         
         res.json({
             count: friends.length,
@@ -1582,9 +1583,7 @@ app.post('/api/admin/notifications/send', async (req, res) => {
 });
 app.get('/api/secure/notifications',validateInitData, async (req, res) => {
     try {
-        const userId = req.tguser.id; // From your Telegram Auth middleware
-        const registrationDate = req.user.createdAt; // Assuming your user model tracks creation
-        
+        const userId = req.tgUser.id; // From your Telegram Auth middleware
         // Fetch matching targeted notifications
         const eligibleNotifications = await Notification.find({
             $or: [
@@ -1627,12 +1626,11 @@ process.on('unhandledRejection', (reason, promise) => {
 app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
     const { taskId } = req.body;
     const userId = req.tgUser.id;
-    if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
-
-    const settings = await getSettings(); // Get admin-set amounts
+const settings = await getSettings(); // Get admin-set amounts
     if (!task) return res.status(404).json({ error: "Task not found" });
 
     const user = await User.findOne({ user_id: userId });
+    if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
     const task = await Task.findOne({ id: taskId }); // 👈 ADD THIS LINE
     // 1. Standard task logic (add balance to current user)
 await User.updateOne(
@@ -1710,8 +1708,6 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
 // 🤖 Auto-Sweep Timer (Corrected)
 setInterval(async () => {
     try {
-        if (ctx) await ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
-
         console.log("🤖 Auto-Sweep started");
         // We use 'async' above so 'await' works here
         await runGhostValidator(null); 
