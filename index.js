@@ -53,7 +53,7 @@ const Ticket = mongoose.model('Ticket', TicketSchema);
 
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
-    });
+    }));
 const WithdrawSchema = new mongoose.Schema({
     user_id: Number,
     username: String,
