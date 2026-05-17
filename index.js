@@ -1503,7 +1503,7 @@ app.get('/api/user/referrals/:id', async (req, res) => {
         res.status(500).json({ error: "Could not fetch friends" });
     }
 });
-app.post('/api/admin/notifications/send', async (req, res) => {
+router.post('/api/admin/notifications/send', async (req, res) => {
     try {
         const { title, message, type, targetType, targetUserId } = req.body;
         
@@ -1523,7 +1523,7 @@ app.post('/api/admin/notifications/send', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-app.get('/api/secure/notifications', async (req, res) => {
+router.get('/api/secure/notifications', async (req, res) => {
     try {
         const userId = req.user.id; // From your Telegram Auth middleware
         const registrationDate = req.user.createdAt; // Assuming your user model tracks creation
