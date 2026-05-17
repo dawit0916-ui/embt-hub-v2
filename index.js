@@ -26,16 +26,20 @@ const User = mongoose.model('User', new mongoose.Schema({
     referralCount: { type: Number, default: 0 },
     history: [{ type: Object }], // 👈 Added this
     createdAt: { type: Date, default: Date.now },
-referral_tasks_done: { type: Number, default: 0 },
-referral_paid: { type: Boolean, default: false },
-referred_by: { type: Number, default: null } // Stores the ID of who invited them
+    referral_tasks_done: { type: Number, default: 0 },
+    referral_paid: { type: Boolean, default: false },
+    penalized_tasks: [String],
+    referred_by: { type: Number, default: null } // Stores the ID of who invited them
                 }));
 const Settings = mongoose.model('Settings', new mongoose.Schema({
     min_withdraw: { type: Number, default: 0.2 },
     ref_bonus: { type: Number, default: 0.1 },
     penalty_fee: { type: Number, default: 0.1 },
     withdrawals_enabled: { type: Boolean, default: true },
-    maintenance_mode: { type: Boolean, default: false }
+    maintenance_mode: { type: Boolean, default: false },
+    ref_commission_percent: { type: Number, default: 10 },
+    ref_bonus_amount: { type: Number, default: 0.05 }
+
 }));
 
 
@@ -52,7 +56,11 @@ const TicketSchema = new mongoose.Schema({
 const Ticket = mongoose.model('Ticket', TicketSchema);
 
 const Task = mongoose.model('Task', new mongoose.Schema({
-    id: String, name: String, url: String, reward: Number, type: String, completions: { type: Number, default: 0 }, max_users: Number
+    id: String, name: String, 
+    url: String, reward: Number, 
+    type: String, completions: { type: Number, default: 0 }, 
+    max_users: Number,
+    enabled: { type: Boolean, default: true }
 }));
 const WithdrawSchema = new mongoose.Schema({
     user_id: Number,
@@ -542,8 +550,7 @@ bot.on('text', async (ctx, next) => {
         await User.updateOne({ user_id: ctx.from.id }, { current_state: null });
         return ctx.reply(`✅ Updated to ${val}`);
     }
-
-    // 🏦 WALLET
+    // 🏦 WALLET HANDLING (FIXED PIPELINE)
     if (state === 'awaiting_wallet') {
         const address = ctx.message.text.trim();
         if (!address.startsWith('0x') || address.length < 42) { 
@@ -551,9 +558,20 @@ bot.on('text', async (ctx, next) => {
         }
 
         const amount = user.balance;
-        const transId = 'W' + Math.floor(Math.random() * 100000);
+        if (amount <= 0) return ctx.reply("❌ Your balance is 0. Nothing to withdraw.");
 
-        // 1. UPDATE USER (Atomic Update)
+        // 1. Create a matching record in the Withdraw collection for the Web Panel
+        // We save this first to get the MongoDB _id string for tracking
+        const withdrawDoc = await Withdraw.create({
+            user_id: ctx.from.id,
+            username: ctx.from.username || `User_${ctx.from.id}`,
+            amount: amount,
+            address: address,
+            method: "BEP20",
+            status: "pending"
+        });
+
+        // 2. UPDATE USER BALANCE & INTERNAL HISTORY (Atomic Update)
         await User.updateOne({ user_id: ctx.from.id }, { 
             $set: { balance: 0, current_state: null },
             $push: { 
@@ -562,12 +580,12 @@ bot.on('text', async (ctx, next) => {
                     amount: `${amount.toFixed(2)} USDT`, 
                     status: '⏳ Pending',
                     address: address,
-                    id: transId 
+                    id: withdrawDoc._id.toString() // Syncs internal ID with the Web MongoDB ID
                 } 
             }
         });
 
-        // 2. NOTIFY ADMINS
+        // 3. NOTIFY ADMINS VIA BOT WITH MONGO ID
         for (const adminId of admins) {
             try {
                 await ctx.telegram.sendMessage(adminId, 
@@ -575,16 +593,19 @@ bot.on('text', async (ctx, next) => {
                     `👤 User: \`${ctx.from.id}\`\n` +
                     `💰 Amount: \`${amount.toFixed(4)}\` USDT\n` +
                     `🏦 Addr: \`${address}\`\n` +
-                    `🆔 ID: \`${transId}\`\n\n` +
-                    `To mark as paid:\n\`/paid ${ctx.from.id} ${amount}\``, 
+                    `🆔 ID: \`${withdrawDoc._id}\`\n\n` +
+                    `To mark as paid via bot:\n\`/paid ${ctx.from.id} ${amount}\``, 
                     { parse_mode: 'Markdown' }
                 );
-            } catch (err) {}
+            } catch (err) {
+                console.error(`Failed to alert admin ${adminId}:`, err.message);
+            }
         }
 
-        return ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in 📜 History.`, mainMenu);
+        return ctx.replyWithMarkdown(`✅ *Request Sent!*\n\nAmount: \`${amount.toFixed(2)}\` USDT\nStatus: *⏳ Pending*\n\nYou can track this in your dashboard or 📜 History.`, mainMenu);
     }
-});
+
+   }); 
 
 bot.start(async (ctx) => {
     const referrerId = ctx.startPayload; 
@@ -1047,7 +1068,7 @@ bot.action('view_withdraw', async (ctx) => {
                     parse_mode: 'Markdown',
                     ...Markup.inlineKeyboard([
                         [Markup.button.callback('💳 Pay Penalty', 'pay_penalty')],
-                        [Markup.button.callback('⬅️ Back', 'earn_more_menu')] // Using admin_main as a reset
+                        [Markup.button.callback('⬅️ Back', 'back_to_earn')] // Using admin_main as a reset
                     ])
                 }
             );
@@ -1070,7 +1091,7 @@ bot.action('view_withdraw', async (ctx) => {
             { 
                 parse_mode: 'Markdown',
                 ...Markup.inlineKeyboard([
-                    [Markup.button.callback('❌ Cancel & Return', 'earn_more_menu')]
+                    [Markup.button.callback('❌ Cancel & Return', '❌
                 ])
             }
         );
@@ -1405,7 +1426,7 @@ app.get('/api/user/:id', async (req, res) => {
 const ADMIN_ID = 7329000880;
 
 // --- 👤 USER MANAGEMENT (Admin Only) ---
-app.get('/api/admin/users', async (req, res) => {
+app.get('/api/admin/users', validateAdmin, async (req, res) => {
     // Basic security check (Note: In production, use headers for this)
     const users = await User.find().sort({ balance: -1 }).limit(100);
     res.json(users);
@@ -1418,7 +1439,7 @@ app.get('/api/settings', async (req, res) => {
     res.json(s);
 });
 
-app.post('/api/settings/update', async (req, res) => {
+app.post('/api/settings/update',validateAdmin, async (req, res) => {
     await Settings.updateOne({}, req.body);
     res.json({ success: true });
 });
@@ -1525,7 +1546,7 @@ app.get('/api/user/referrals/:id', async (req, res) => {
         const userId = parseInt(req.params.id);
         
         // Find all users who were invited by this ID
-        const friends = await User.find({ referrer_id: userId }).select('username first_name created_at balance');
+        const friends = await User.find({ referrer_by: userId }).select('username first_name created_at balance');
         
         res.json({
             count: friends.length,
@@ -1559,9 +1580,9 @@ app.post('/api/admin/notifications/send', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-app.get('/api/secure/notifications', async (req, res) => {
+app.get('/api/secure/notifications',validateInitData, async (req, res) => {
     try {
-        const userId = req.user.id; // From your Telegram Auth middleware
+        const userId = req.tguser.id; // From your Telegram Auth middleware
         const registrationDate = req.user.createdAt; // Assuming your user model tracks creation
         
         // Fetch matching targeted notifications
@@ -1606,7 +1627,10 @@ process.on('unhandledRejection', (reason, promise) => {
 app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
     const { taskId } = req.body;
     const userId = req.tgUser.id;
+    if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
+
     const settings = await getSettings(); // Get admin-set amounts
+    if (!task) return res.status(404).json({ error: "Task not found" });
 
     const user = await User.findOne({ user_id: userId });
     const task = await Task.findOne({ id: taskId }); // 👈 ADD THIS LINE
@@ -1643,36 +1667,51 @@ await User.updateOne(
 
     res.json({ success: true });
 });
-// --- 📣 MASS BROADCAST ---
+// --- 📣 MASS BROADCAST (FIXED MEMORY & THROTTLE) ---
 app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Message cannot be empty" });
 
     try {
-        const users = await User.find({}, 'user_id'); // Fetch all user IDs
-        let successCount = 0;
+        const users = await User.find({}, 'user_id'); // Only pull user_id to minimize RAM usage
 
-        // Send messages in the background
-        users.forEach(async (user, index) => {
-            // We add a slight delay (75ms) between messages to avoid Telegram rate limits
-            setTimeout(async () => {
+        // 1. Respond to the Web App UI instantly so the connection doesn't hang or timeout
+        res.json({ success: true, total: users.length, status: "Broadcast processing in background." });
+
+        // 2. Run the broadcast worker asynchronously in the background
+        (async () => {
+            console.log(`🚀 Background broadcast started for ${users.length} users...`);
+            let successCount = 0;
+
+            for (const user of users) {
                 try {
                     await bot.telegram.sendMessage(user.user_id, message, { parse_mode: 'HTML' });
                     successCount++;
                 } catch (err) {
-                    console.log(`Failed to send to ${user.user_id}`);
+                    // Handles blocked bots or deleted telegram accounts without breaking the loop
+                    console.log(`⚠️ Skip user ${user.user_id}: ${err.message}`);
                 }
-            }, index * 75); 
-        });
 
-        res.json({ success: true, total: users.length });
+                // 3. The golden rule: wait 75ms linearly between EVERY message.
+                // This keeps RAM dead flat and keeps Telegram's rate-limit police happy.
+                await new Promise(resolve => setTimeout(resolve, 75));
+            }
+            console.log(`✅ Background broadcast finished. Successfully hit ${successCount}/${users.length} users.`);
+        })();
+
     } catch (e) {
-        res.status(500).json({ error: "Broadcast failed" });
+        console.error("Broadcast Initialization Error:", e);
+        if (!res.headersSent) {
+            res.status(500).json({ error: "Failed to initialize broadcast system." });
+        }
     }
 });
+
 // 🤖 Auto-Sweep Timer (Corrected)
 setInterval(async () => {
     try {
+        if (ctx) await ctx.reply("🕵️ *Ghost Validator:* Starting the Midnight Sweep...");
+
         console.log("🤖 Auto-Sweep started");
         // We use 'async' above so 'await' works here
         await runGhostValidator(null); 
