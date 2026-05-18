@@ -831,6 +831,39 @@ app.post('/api/admin/settings', validateAdmin, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 🌍 PUBLIC ROUTE: Accessible by all users to load active tasks
+app.get('/api/tasks', async (req, res) => {
+    try {
+        // Fetch all tasks from the database collection
+        const tasks = await Task.find({}).lean();
+
+        // Map the database keys securely to guarantee the frontend never reads 'undefined'
+        const safeTasksPayload = tasks.map(task => ({
+            id: task.id,
+            title: task.title || 'Untitled Task',
+            url: task.url || '#',
+            description: task.description || '',
+            // Fix Bug 1: Provide BOTH naming structures so old and new frontends work!
+            image: task.image || '', 
+            reward: task.reward || 0,
+            rewardAmt: task.reward || 0, 
+            // Fix Bug 2: Normalize the category names (maps 'Education' or 'Education' smoothly to 'edu')
+            category: (task.category && task.category.toLowerCase().startsWith('edu')) ? 'edu' : (task.category || 'main'),
+            type: task.type || 'social',
+            taskType: task.type || 'social'
+        }));
+
+        return res.json({
+            success: true,
+            tasks: safeTasksPayload
+        });
+
+    } catch (err) {
+        console.error("Public task catalog stream error:", err);
+        return res.status(500).json({ success: false, error: "Task matrix stream offline." });
+    }
+});
+
 app.get('/api/admin/tasks', validateAdmin, async (req, res) => res.json(await Task.find()));
 
 // Upgraded task route matching your exact frontend schema payload expectations
