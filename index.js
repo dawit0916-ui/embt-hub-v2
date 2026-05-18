@@ -814,15 +814,51 @@ app.get('/api/user/:id', async (req, res) => {
     try {
         const userId = Number(req.params.id); 
         const user = await User.findOne({ user_id: userId });
+        
         if (user) {
+            // 1. PRESERVED BOT LOGIC: Delete welcome message if marked for cleanup
             if (user.current_state && user.current_state.startsWith('delete_welcome_')) {
                 const msgId = parseInt(user.current_state.split('_')[2]);
                 bot.telegram.deleteMessage(userId, msgId).catch(() => {});
                 await User.updateOne({ user_id: userId }, { $set: { current_state: null } });
             }
-            res.json({ balance: user.balance || 0, referrals: user.referralCount || 0, total_earned: user.total_earned || 0, isAdmin: admins.includes(userId) });
-        } else { res.json({ balance: 0, referrals: 0, isAdmin: false }); }
-    } catch (err) { res.status(500).json({ error: "Internal Context Fault" }); }
+
+            // 2. UPGRADED RESPONSE: Return complete metrics profile matrix
+            return res.json({
+                success: true,
+                user_id: user.user_id,
+                balance: user.balance || 0,
+                points: user.points || 0.00,
+                total_earned: user.total_earned || 0,
+                referrals: user.referralCount || 0,
+                // Calculate total completed tasks by measuring the array length safely
+                tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
+                // Restriction markers
+                is_banned: user.is_banned || false,
+                red_flag: user.red_flag || false,
+                // Community tasks counter tracking
+                tasks_added: user.tasks_added || 0,
+                isAdmin: admins.includes(userId)
+            });
+        } else { 
+            // 3. FALLBACK STRUCTURE: Clean return defaults to prevent frontend errors if user isn't found
+            return res.json({ 
+                success: false,
+                balance: 0, 
+                points: 0,
+                total_earned: 0,
+                referrals: 0, 
+                tasksCompletedCount: 0,
+                tasks_added: 0,
+                isAdmin: false,
+                is_banned: false,
+                red_flag: false
+            }); 
+        }
+    } catch (err) { 
+        console.error("Backend profile fetch fault:", err);
+        res.status(500).json({ error: "Internal Context Fault" }); 
+    }
 });
 
 app.get('/api/admin/users', validateAdmin, async (req, res) => res.json(await User.find().sort({ balance: -1 }).limit(100)));
