@@ -745,6 +745,85 @@ app.get('/api/admin/stats', validateAdmin, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get('/api/secure/profile', async (req, res) => {
+    try {
+        // 1. Extract the Telegram validation token string from your secureFetch headers
+        const authHeader = req.headers['x-telegram-init-data'];
+        if (!authHeader || !authHeader.startsWith('tma ')) {
+            return res.status(401).json({ error: "Unauthorized: Missing authentication token context." });
+        }
+
+        // Remove the 'tma ' prefix to read the raw query sequence string
+        const initDataRaw = authHeader.substring(4);
+        
+        // 2. Parse the webapp URL query string to isolate the serialized 'user' object data parameters
+        const urlParams = new URLSearchParams(initDataRaw);
+        const userParamString = urlParams.get('user');
+
+        if (!userParamString) {
+            return res.status(400).json({ error: "Bad Request: Malformed structural init data session profile payload." });
+        }
+
+        // 3. De-serialize the Telegram identity payload properties securely
+        const telegramContextUser = JSON.parse(userParamString);
+        const userId = Number(telegramContextUser.id);
+
+        if (!userId) {
+            return res.status(400).json({ error: "Invalid identity verification criteria parameter." });
+        }
+
+        // 4. Query your database collection directly using the verified Telegram account ID
+        const user = await User.findOne({ user_id: userId });
+
+        if (user) {
+            // Build a fully mapped data profile configuration matrix block
+            const accountMetricsPayload = {
+                success: true,
+                user_id: user.user_id,
+                balance: user.balance || 0, // Yields your true chatbot value (e.g. 0.7805)
+                points: user.points || 0.00,
+                total_earned: user.total_earned || 0,
+                referrals: user.referralCount || 0,
+                tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
+                is_banned: user.is_banned || false,
+                red_flag: user.red_flag || false,
+                tasks_added: user.tasks_added || 0,
+                isAdmin: admins.includes(userId)
+            };
+
+            // Return BOTH structural patterns to satisfy all frontend setup variations perfectly
+            return res.json({
+                ...accountMetricsPayload,
+                profile: accountMetricsPayload // Matches the 'data.profile' frontend verification path
+            });
+
+        } else {
+            // Fallback object initialization if a record hasn't synced into the system yet
+            const defaultEmptyPayload = {
+                success: false,
+                balance: 0,
+                points: 0,
+                total_earned: 0,
+                referrals: 0,
+                tasksCompletedCount: 0,
+                tasks_added: 0,
+                is_banned: false,
+                red_flag: false,
+                isAdmin: false
+            };
+
+            return res.json({
+                ...defaultEmptyPayload,
+                profile: defaultEmptyPayload
+            });
+        }
+
+    } catch (err) {
+        console.error("Secure profile extraction protocol engine error stack trace:", err);
+        return res.status(500).json({ error: "Internal Context Security Pipeline Fault" });
+    }
+});
+
 app.post('/api/admin/settings', validateAdmin, async (req, res) => {
     try {
         await Settings.updateOne({}, { $set: req.body });
