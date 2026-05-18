@@ -18,7 +18,9 @@ app.use(express.json());
 
 const User = mongoose.model('User', new mongoose.Schema({
     user_id: Number,
+    username: { type: String, default: null },
     balance: { type: Number, default: 0 },
+    points: { type: Number, default: 0.00 },
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
     current_state: String,
@@ -29,6 +31,7 @@ const User = mongoose.model('User', new mongoose.Schema({
     referral_tasks_done: { type: Number, default: 0 },
     referral_paid: { type: Boolean, default: false },
     penalized_tasks: [String],
+    is_banned: { type: Boolean, default: false },
     referred_by: { type: Number, default: null } 
 }));
 
@@ -755,6 +758,37 @@ app.post('/api/admin/tasks/add', validateAdmin, async (req, res) => {
     const taskId = 't' + Math.floor(Math.random() * 10000);
     await new Task({ ...req.body, id: taskId }).save();
     res.json({ success: true, taskId });
+});
+
+app.get('/api/admin/directory', validateAdmin, async (req, res) => {
+    try {
+        const filterType = req.query.filter || 'all';
+        let databaseQuery = {};
+
+        // Filter out users conditionally based on the tab selection state
+        if (filterType === 'banned') {
+            databaseQuery.is_banned = true;
+        }
+
+        // Pull documents matching your model schema properties
+        const userDirectory = await User.find(databaseQuery)
+            .select('user_id username balance points is_banned')
+            .sort({ createdAt: -1 });
+
+        // Map data properties clean to prevent front-end mapping crashes
+        const structuralPayload = userDirectory.map(user => ({
+            user_id: user.user_id,
+            username: user.username || null,
+            balance: user.balance || 0,
+            points: user.points || 0.00,
+            is_banned: user.is_banned || false
+        }));
+
+        return res.status(200).json(structuralPayload);
+    } catch (error) {
+        console.error("Error executing directory dataset dump query:", error);
+        return res.status(500).json({ success: false, error: 'Database service query failure mapping user collections.' });
+    }
 });
 
 app.get('/api/admin/payouts/pending', validateAdmin, async (req, res) => res.json(await Withdraw.find({ status: 'pending' })));
