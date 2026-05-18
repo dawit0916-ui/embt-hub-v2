@@ -833,10 +833,32 @@ app.post('/api/admin/settings', validateAdmin, async (req, res) => {
 
 app.get('/api/admin/tasks', validateAdmin, async (req, res) => res.json(await Task.find()));
 
+// Upgraded task route matching your exact frontend schema payload expectations
 app.post('/api/admin/tasks/add', validateAdmin, async (req, res) => {
-    const taskId = 't' + Math.floor(Math.random() * 10000);
-    await new Task({ ...req.body, id: taskId }).save();
-    res.json({ success: true, taskId });
+    try {
+        const taskId = 't' + Math.floor(Math.random() * 10000);
+        
+        // Maps your frontend data schema properties natively into MongoDB
+        const newTask = new Task({
+            ...req.body,
+            id: taskId
+        });
+
+        await newTask.save();
+        
+        return res.json({ 
+            success: true, 
+            message: "Task successfully saved to database.",
+            taskId 
+        });
+
+    } catch (err) {
+        console.error("Task deployment transaction failure:", err);
+        return res.status(500).json({ 
+            success: false, 
+            error: "Database failed to compile or save task properties payload." 
+        });
+    }
 });
 
 app.get('/api/admin/directory', validateAdmin, async (req, res) => {
