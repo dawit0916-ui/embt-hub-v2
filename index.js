@@ -1281,7 +1281,7 @@ const PRIZES = [
  * @desc    Execute a secure, server-authoritative lucky wheel spin
  * @access  Private (Requires verified user session / Telegram ID)
  */
-app.post('/spin', async (req, res) => {
+app.post('/api/games/spin', async (req, res) => {
     // In production, grab this from your authenticated session or validated JWT/initData
     const { telegramId } = req.body; 
 
