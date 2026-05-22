@@ -141,6 +141,15 @@ const Transaction = mongoose.model('Transaction', new mongoose.Schema({
         default: Date.now
     }
 }));
+// Secure Weighted Probability Matrix Matrix configuration
+const PRIZES = [
+    { index: 0, text: "10 Pts", type: "points", value: 10, weight: 50 },      // 40% Chance
+    { index: 1, text: "20 Pts", type: "points", value: 20, weight: 24 },      // 30% Chance
+    { index: 2, text: "50 Pts", type: "points", value: 50, weight: 5 },      // 15% Chance
+    { index: 3, text: "TRY AGAIN", type: "none", value: 0, weight: 20 },      // 10% Chance
+    { index: 4, text: "100 Pts", type: "points", value: 100, weight: 0.5 },   // 4.5% Chance
+    { index: 5, text: "500 JACKPOT", type: "points", value: 500, weight: 0.5 } // 0.5% Chance
+];
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 
 // --- SETTINGS FETCHER ---
@@ -1266,115 +1275,76 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
 });
 
 
-// Secure Weighted Probability Matrix Matrix configuration
-const PRIZES = [
-    { index: 0, text: "10 Pts", type: "points", value: 10, weight: 50 },      // 40% Chance
-    { index: 1, text: "20 Pts", type: "points", value: 20, weight: 24 },      // 30% Chance
-    { index: 2, text: "50 Pts", type: "points", value: 50, weight: 5 },      // 15% Chance
-    { index: 3, text: "TRY AGAIN", type: "none", value: 0, weight: 20 },      // 10% Chance
-    { index: 4, text: "100 Pts", type: "points", value: 100, weight: 0.5 },   // 4.5% Chance
-    { index: 5, text: "500 JACKPOT", type: "points", value: 500, weight: 0.5 } // 0.5% Chance
-];
 
-/**
- * @route   POST /api/games/spin
- * @desc    Execute a secure, server-authoritative lucky wheel spin
- * @access  Private (Requires verified user session / Telegram ID)
- */
+
+// Ensure your User model database schema is accessible inside this file execution context
+// const User = require('./models/User'); 
+
 app.post('/api/games/spin', async (req, res) => {
-    // In production, grab this from your authenticated session or validated JWT/initData
-    const { telegramId } = req.body; 
-
-    if (!telegramId) {
-        return res.status(400).json({ success: false, error: "Missing identity tracking parameter." });
-    }
-
     try {
-        // 1. Fetch user document from central MongoDB
-        const user = await User.findOne({ telegramId });
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Profile record not found." });
-        }
+        const { telegramId } = req.body;
 
-        // 2. Enforce Entry Fee Validation (Costs 1 Coin)
-        // Ensure your User model has a 'coins' field (or adapt to your exact currency name)
-        if (!user.coins || user.coins < 1) {
-            return res.status(403).json({ success: false, error: "Insufficient Coins. Invite friends or deposit to earn more!" });
-        }
-
-        // 3. Atomically deduct the entry fee immediately to prevent double-spending exploits
-        user.coins -= 1;
-
-        // 4. Run Weighted Random Generation Logic
-        const randomRoll = Math.random() * 100;
-        let cumulativeWeight = 0;
-        let winningPrize = PRIZES[3]; // Default fallback to "Try Again"
-
-        for (const prize of PRIZES) {
-            cumulativeWeight += prize.weight;
-            if (randomRoll <= cumulativeWeight) {
-                winningPrize = prize;
-                break;
-            }
-        }
-
-        // 5. Update user rewards balance if they won points
-        if (winningPrize.type === "points") {
-            // Ensure user schema has your tracking points field (e.g., balance)
-            user.balance = (user.balance || 0) + winningPrize.value;
-        }
-
-        // Save updated balances safely to MongoDB
-        await user.save();
-
-        // 6. Append entries to the Ledger Transactions Schema matching our Blueprint
-        const transactionRecords = [];
-
-        // Log the structural deduction cost
-        const costLog = new Transaction({
-            id: `SPIN_COST_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-            user_id: telegramId,
-            type: 'game_spin',
-            amount: 1,
-            fee: 0,
-            finalAmount: -1,
-            status: 'approved'
-        });
-        transactionRecords.push(costLog.save());
-
-        // Log the win if a prize was actually secured
-        if (winningPrize.type === "points") {
-            const winLog = new Transaction({
-                id: `SPIN_WIN_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-                user_id: telegramId,
-                type: 'game_win',
-                amount: winningPrize.value,
-                fee: 0,
-                finalAmount: winningPrize.value,
-                status: 'approved'
+        // Validation Gate
+        if (!telegramId) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Authentication tracking failed: Missing user ID reference parameter." 
             });
-            transactionRecords.push(winLog.save());
         }
 
-        // Execute ledger writes in parallel background execution
-        await Promise.all(transactionRecords);
+        // 1. Fetch matching user database tracking profile
+        const userRecord = await User.findOne({ user_id: telegramId });
 
-        // 7. Respond to frontend with the target matrix index so the animation matches perfectly
+        if (!userRecord) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Account profile ledger not found in database records." 
+            });
+        }
+
+        // 2. Compute Probabilities & Adjust State Metrics
+        const distributionPick = Math.random() * 100;
+        let winningIndex = 3; // Default: "TRY AGAIN"
+
+        if (distributionPick < 40.0) {
+            winningIndex = 0; // 40% Odds: 10 Pts
+            userRecord.points = (userRecord.points || 0) + 10;
+        } else if (distributionPick < 70.0) {
+            winningIndex = 1; // 30% Odds: 20 Pts
+            userRecord.points = (userRecord.points || 0) + 20;
+        } else if (distributionPick < 85.0) {
+            winningIndex = 2; // 15% Odds: 50 Pts
+            userRecord.points = (userRecord.points || 0) + 50;
+        } else if (distributionPick < 95.0) {
+            winningIndex = 3; // 10% Odds: "TRY AGAIN" (0 Pts)
+        } else if (distributionPick < 99.5) {
+            winningIndex = 4; // 4.5% Odds: 100 Pts
+            userRecord.points = (userRecord.points || 0) + 100;
+        } else {
+            winningIndex = 5; // 0.5% Odds: 500 JACKPOT Pts
+            userRecord.points = (userRecord.points || 0) + 500;
+        }
+
+        // 3. Save modified point document values back to database cluster
+        await userRecord.save();
+
+        // 4. Return data synchronization properties back to your front-end fetch
         return res.status(200).json({
             success: true,
-            winningIndex: winningPrize.index,
-            prizeText: winningPrize.text,
-            newCoinBalance: user.coins,
-            newPointBalance: user.balance
+            winningIndex: winningIndex,
+            newCoinBalance: parseFloat(userRecord.balance || 0),
+            newPointBalance: parseFloat(userRecord.points || 0)
         });
 
-    } catch (error) {
-        console.error("Critical System Spin Engine Error:", error);
-        return res.status(500).json({ success: false, error: "Internal transactional server error." });
+    } catch (networkExceptionTrace) {
+        console.error("Fatal error inside app.post('/api/games/spin') execution node:", networkExceptionTrace);
+        return res.status(500).json({ 
+            success: false, 
+            error: "Internal server error updating game balance matrices." 
+        });
     }
 });
 
-module.exports = app;
 
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
 setInterval(async () => {
