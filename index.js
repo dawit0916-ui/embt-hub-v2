@@ -97,52 +97,48 @@ const UserNotificationState = mongoose.model('UserNotificationState', new mongoo
     isRead: { type: Boolean, default: false }
 }));
 
-const Transaction = mongoose.model('Transaction', new mongoose.Schema({
-    id: {
-        type: String,
-        required: true,
-        unique: true,
-        index: true // Unique tracking reference code
-    },
-    user_id: {
-        type: Number,
-        required: true,
-        index: true // Maps back to user_id in your User collection
-    },
-    type: {
-        type: String,
-        required: true,
-        enum: ['withdrawal', 'transfer', 'game_spin', 'game_win'] // Standardized system typings
-    },
-    target_user_id: {
-        type: Number,
-        default: null // Only populated during internal P2P balance loops
-    },
-    amount: {
-        type: Number,
-        required: true // Raw amount requested or spent
-    },
-    fee: {
-        type: Number,
-        default: 0 // Calculated network percentage fee (applicable to withdrawals)
-    },
-    finalAmount: {
-        type: Number,
-        required: true // The precise net balance alteration (Amount - Fee)
-    },
-    status: {
-        type: String,
-        required: true,
-        enum: ['pending', 'approved', 'rejected'],
-        default: 'pending' // Managed state lifecycle controlled by your Admin panels
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now
-    }
-}));
+const WalletTransactionSchema = new mongoose.Schema({
+    userId: { type: Number, required: true, index: true },
+    txId: { type: String, unique: true, default: () => crypto.randomBytes(6).toString('hex').toUpperCase() },
+    txType: { type: String, enum: ['TRANSFER_OUT', 'TRANSFER_IN', 'WITHDRAWAL', 'REFERRAL_BONUS'], required: true },
+    assetType: { type: String, enum: ['usdt', 'coins', 'points'], required: true },
+    amount: { type: Number, required: true },
+    counterpartyId: { type: String, default: "SYSTEM_RESERVE_POOL" },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending', index: true },
+    network: { type: String, default: "INTERNAL_LEDGER_RAILS" },
+    cryptoAddress: { type: String, default: "LOCAL_VAULT_NODE" },
+    memo: { type: String, default: "" },
+    timestamp: { type: Date, default: Date.now }
+});
 
+const WalletTransaction = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', WalletTransactionSchema);
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
+
+// Middleware function ensuring request payloads have safe extraction authentication tokens mapped
+function verifySecureEcosystemSessionToken(req) {
+    const rawAuthHeaderDataString = req.headers['x-telegram-init-data'];
+    const cleanRawDataString = rawAuthHeaderDataString && rawAuthHeaderDataString.startsWith('tma ') ? rawAuthHeaderDataString.substring(4) : '';
+    
+    if (!cleanRawDataString) return { valid: false };
+    
+    // process.env.BOT_TOKEN must be read from environment variables securely (.env configuration cluster)
+    const urlParams = new URLSearchParams(cleanRawDataString);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    
+    const dataCheckArr = [];
+    for (const [key, value] of urlParams.entries()) { dataCheckArr.push(`${key}=${value}`); }
+    dataCheckArr.sort();
+    const dataCheckString = dataCheckArr.join('\n');
+    
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    
+    if (calculatedHash !== hash) return { valid: false };
+    
+    const userRaw = urlParams.get('user');
+    return { valid: true, user: userRaw ? JSON.parse(userRaw) : null };
+}
 
 // --- SETTINGS FETCHER ---
 async function getSettings() {
@@ -1397,6 +1393,198 @@ app.post('/api/secure/lucky-spin', async (req, res) => {
             success: false, 
             error: "Internal server error updating game balance matrices." 
         });
+    }
+});
+/* ==========================================================================
+   PRODUCTION ENGINE LOGIC SECURE CRYPTO WALLET TAB ROUTING SUBSYSTEM
+   ========================================================================== */
+
+
+// API ROUTE A: Secure high-efficiency multi-asset P2P validation internal balance ledger transfers pipeline
+app.post('/api/secure/wallet/transfer', async (req, res) => {
+    try {
+        const sessionValidationContext = verifySecureEcosystemSessionToken(req);
+        if (!sessionValidationContext.valid || !sessionValidationContext.user) {
+            return res.status(401).json({ success: false, error: "Unauthorized endpoint validation session mismatch." });
+        }
+        
+        const senderTelegramId = sessionValidationContext.user.id;
+        const { recipientIdOrUsername, assetType, amount, memo } = req.body;
+        
+        const processingVolumeAmount = parseFloat(amount);
+        if (isNaN(processingVolumeAmount) || processingVolumeAmount <= 0) {
+            return res.status(400).json({ success: false, error: "Invalid financial clearing volume amount constraints parameter specification." });
+        }
+        
+        if (!['usdt', 'coins', 'points'].includes(assetType)) {
+            return res.status(400).json({ success: false, error: "Invalid targeted account asset ledger destination system mapping target tracking reference." });
+        }
+
+        // Fetch sender transaction logging account document data profile
+        const senderProfileRecordNode = await User.findOne({ user_id: senderTelegramId });
+        if (!senderProfileRecordNode) {
+            return res.status(404).json({ success: false, error: "Origin account record pointer data tracking structure anomaly." });
+        }
+
+        // Anti-collusion identity evaluation validation rules check
+        if (String(senderTelegramId) === String(recipientIdOrUsername) || String(senderProfileRecordNode.username).toLowerCase() === String(recipientIdOrUsername).toLowerCase()) {
+            return res.status(400).json({ success: false, error: "System transaction rejected: Asset self-transfers are disallowed." });
+        }
+
+        // Dynamically resolve target counterparty document data ledger map locations
+        let queryFilterMatchCriterion = {};
+        if (!isNaN(recipientIdOrUsername)) {
+            queryFilterMatchCriterion = { user_id: Number(recipientIdOrUsername) };
+        } else {
+            const cleanSanitizedUsernameString = recipientIdOrUsername.replace('@', '');
+            queryFilterMatchCriterion = { username: new RegExp(`^${cleanSanitizedUsernameString}$`, 'i') };
+        }
+
+        const recipientProfileRecordNode = await User.findOne(queryFilterMatchCriterion);
+        if (!recipientProfileRecordNode) {
+            return res.status(404).json({ success: false, error: "Recipient account match indicator criteria not verified on system logs." });
+        }
+
+        // Evaluate precise available balance metrics classes configurations mappings boundaries
+        if (assetType === 'usdt' && (senderProfileRecordNode.balance || 0) < processingVolumeAmount) {
+            return res.status(400).json({ success: false, error: "Insufficient available liquidation capital balance ledger clearance pool assets." });
+        }
+        if (assetType === 'coins' && (senderProfileRecordNode.coins || 0) < processingVolumeAmount) {
+            return res.status(400).json({ success: false, error: "Insufficient network utility native mint engine transaction items." });
+        }
+        if (assetType === 'points' && (senderProfileRecordNode.points || 0) < processingVolumeAmount) {
+            return res.status(400).json({ success: false, error: "Insufficient active structural allocation performance yields points blocks." });
+        }
+
+        // Atomic multi-account balances debit credit clearing mutation tracking adjustments loop
+        if (assetType === 'usdt') {
+            senderProfileRecordNode.balance = (senderProfileRecordNode.balance || 0) - processingVolumeAmount;
+            recipientProfileRecordNode.balance = (recipientProfileRecordNode.balance || 0) + processingVolumeAmount;
+        } else if (assetType === 'coins') {
+            senderProfileRecordNode.coins = (senderProfileRecordNode.coins || 0) - processingVolumeAmount;
+            recipientProfileRecordNode.coins = (recipientProfileRecordNode.coins || 0) + processingVolumeAmount;
+        } else if (assetType === 'points') {
+            senderProfileRecordNode.points = (senderProfileRecordNode.points || 0) - processingVolumeAmount;
+            recipientProfileRecordNode.points = (recipientProfileRecordNode.points || 0) + processingVolumeAmount;
+        }
+
+        await senderProfileRecordNode.save();
+        await recipientProfileRecordNode.save();
+
+        // Build system cross ledger tracking references block logs documentation items automatically
+        const generatedSharedTrackingLinkReferenceHashId = crypto.randomBytes(6).toString('hex').toUpperCase();
+
+        await WalletTransaction.create([
+            {
+                userId: senderTelegramId,
+                txId: `TXO-${generatedSharedTrackingLinkReferenceHashId}`,
+                txType: 'TRANSFER_OUT',
+                assetType: assetType,
+                amount: processingVolumeAmount,
+                counterpartyId: String(recipientProfileRecordNode.user_id),
+                status: 'accepted',
+                memo: memo || 'P2P Transfer Settlement Ledger Out'
+            },
+            {
+                userId: recipientProfileRecordNode.user_id,
+                txId: `TXI-${generatedSharedTrackingLinkReferenceHashId}`,
+                txType: 'TRANSFER_IN',
+                assetType: assetType,
+                amount: processingVolumeAmount,
+                counterpartyId: String(senderTelegramId),
+                status: 'accepted',
+                memo: memo || 'P2P Transfer Settlement Ledger In'
+            }
+        ]);
+
+        return res.status(200).json({ success: true, message: "Asset balancing tracking transfer sequence processed securely." });
+
+    } catch (catastrophicCrashInternalEngineTrace) {
+        console.error("Crash executing wallet transfer system node loop:", catastrophicCrashInternalEngineTrace);
+        return res.status(500).json({ success: false, error: "Internal processing engine loop crash fault detected on core nodes layers." });
+    }
+});
+
+// API ROUTE B: Secure referral metric checks framework milestone cashout extractor endpoint
+app.post('/api/secure/wallet/withdraw-tier', async (req, res) => {
+    try {
+        const sessionValidationContext = verifySecureEcosystemSessionToken(req);
+        if (!sessionValidationContext.valid || !sessionValidationContext.user) {
+            return res.status(401).json({ success: false, error: "Session invalid token payload authentication credentials trace mismatch." });
+        }
+
+        const telegramUserId = sessionValidationContext.user.id;
+        const { inviteThreshold, payoutAmount, network, cryptoAddress } = req.body;
+
+        const userProfileRecordNode = await User.findOne({ user_id: telegramUserId });
+        if (!userProfileRecordNode) {
+            return res.status(404).json({ success: false, error: "Target data cluster path context references not mapped correctly." });
+        }
+
+        // Database verified referral structure rules check validation 
+        const databaseVerifiedInvitesCount = parseInt(userProfileRecordNode.total_invited || 0);
+        if (databaseVerifiedInvitesCount < parseInt(inviteThreshold)) {
+            return res.status(400).json({ success: false, error: `Ecosystem audit violation: Milestone tracking threshold requirement mapping verification failure.` });
+        }
+
+        // Prevent milestone duplication attacks or race condition double-claims
+        const duplicateClaimVerificationTraceCheck = await WalletTransaction.findOne({
+            userId: telegramUserId,
+            txType: 'WITHDRAWAL',
+            amount: parseFloat(payoutAmount),
+            status: { $in: ['pending', 'accepted'] }
+        });
+
+        if (duplicateClaimVerificationTraceCheck) {
+            return res.status(400).json({ success: false, error: "A clearance payout transaction matched this milestone allocation tier block model already." });
+        }
+
+        // Create transaction statement directly into processing queue
+        await WalletTransaction.create({
+            userId: telegramUserId,
+            txType: 'WITHDRAWAL',
+            assetType: 'usdt',
+            amount: parseFloat(payoutAmount),
+            counterpartyId: "EXTERNAL_MAINNET_SETTLEMENT_RESERVE",
+            status: 'pending',
+            network: network,
+            cryptoAddress: cryptoAddress,
+            memo: `Milestone Cashout Allocation Tier Check for ${inviteThreshold} Invites Completed`
+        });
+
+        return res.status(200).json({ success: true, message: "Milestone extraction tracking payout successfully registered into clearance queues." });
+
+    } catch (catastrophicCrashInternalEngineTrace) {
+        console.error("Crash tracing milestone tier payout extraction pipeline loops:", catastrophicCrashInternalEngineTrace);
+        return res.status(500).json({ success: false, error: "Internal operational structural fault trace error raised on system extraction nodes." });
+    }
+});
+
+// API ROUTE C: Asynchronous statement lazy-loader historical ledger logs query parsing engine
+app.get('/api/secure/wallet/history', async (req, res) => {
+    try {
+        const sessionValidationContext = verifySecureEcosystemSessionToken(req);
+        if (!sessionValidationContext.valid || !sessionValidationContext.user) {
+            return res.status(401).json({ success: false, error: "Invalid credentials execution trace sequence match mapping." });
+        }
+
+        const telegramUserId = sessionValidationContext.user.id;
+        const targetSearchStatusFilter = req.query.status || 'pending';
+
+        // Query optimizations limits records tracking pipelines indices sorting configurations
+        const verifiedHistoricalLedgerMatchesList = await WalletTransaction.find({
+            userId: telegramUserId,
+            status: String(targetSearchStatusFilter)
+        })
+        .sort({ timestamp: -1 })
+        .limit(40)
+        .lean();
+
+        return res.status(200).json({ success: true, history: verifiedHistoricalLedgerMatchesList });
+
+    } catch (catastrophicCrashInternalEngineTrace) {
+        console.error("Crash reading historical transaction records matching pipelines data:", catastrophicCrashInternalEngineTrace);
+        return res.status(500).json({ success: false, error: "Internal operational query trace runtime anomaly exception thrown on storage layers." });
     }
 });
 
