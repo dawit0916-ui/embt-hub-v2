@@ -141,15 +141,7 @@ const Transaction = mongoose.model('Transaction', new mongoose.Schema({
         default: Date.now
     }
 }));
-// Secure Weighted Probability Matrix Matrix configuration
-const PRIZES = [
-    { index: 0, text: "10 Pts", type: "points", value: 10, weight: 50 },      // 40% Chance
-    { index: 1, text: "20 Pts", type: "points", value: 20, weight: 24 },      // 30% Chance
-    { index: 2, text: "50 Pts", type: "points", value: 50, weight: 5 },      // 15% Chance
-    { index: 3, text: "TRY AGAIN", type: "none", value: 0, weight: 20 },      // 10% Chance
-    { index: 4, text: "100 Pts", type: "points", value: 100, weight: 0.5 },   // 4.5% Chance
-    { index: 5, text: "500 JACKPOT", type: "points", value: 500, weight: 0.5 } // 0.5% Chance
-];
+
 const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
 
 // --- SETTINGS FETCHER ---
@@ -1275,25 +1267,52 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
 });
 
 
+// Helper function to validate Telegram Web App initData hashes securely
+function verifyTelegramAuthorization(initDataRaw, botToken) {
+    if (!initDataRaw) return { valid: false };
+    
+    const urlParams = new URLSearchParams(initDataRaw);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    
+    // Sort keys alphabetically as required by Telegram specification
+    const dataCheckArr = [];
+    for (const [key, value] of urlParams.entries()) {
+        dataCheckArr.push(`${key}=${value}`);
+    }
+    dataCheckArr.sort();
+    const dataCheckString = dataCheckArr.join('\n');
+    
+    // Perform cryptographic verification signature validations
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    
+    if (calculatedHash !== hash) return { valid: false };
+    
+    const userRaw = urlParams.get('user');
+    return { valid: true, user: userRaw ? JSON.parse(userRaw) : null };
+}
 
-
-// Ensure your User model database schema is accessible inside this file execution context
-// const User = require('./models/User'); 
-
-app.post('/api/games/spin', async (req, res) => {
+app.post('/api/secure/lucky-spin', async (req, res) => {
     try {
-        const { telegramId } = req.body;
-
-        // Validation Gate
-        if (!telegramId) {
-            return res.status(400).json({ 
+        // Extract initialization token injected by your front-end secureFetch engine
+        const authHeader = req.headers['x-telegram-init-data'];
+        const cleanRawDataString = authHeader && authHeader.startsWith('tma ') ? authHeader.substring(4) : '';
+        
+        // BOT_TOKEN must be read from environment variables (.env) securely
+        const sessionTokenVerificationResult = verifyTelegramAuthorization(cleanRawDataString, process.env.BOT_TOKEN);
+        
+        if (!sessionTokenVerificationResult.valid || !sessionTokenVerificationResult.user) {
+            return res.status(401).json({ 
                 success: false, 
-                error: "Authentication tracking failed: Missing user ID reference parameter." 
+                error: "Unauthorized session validation: Signature hash mismatch or expired." 
             });
         }
+        
+        const validatedTelegramUserId = sessionTokenVerificationResult.user.id;
 
         // 1. Fetch matching user database tracking profile
-        const userRecord = await User.findOne({ user_id: telegramId });
+        const userRecord = await User.findOne({ user_id: validatedTelegramUserId });
 
         if (!userRecord) {
             return res.status(404).json({ 
@@ -1302,49 +1321,84 @@ app.post('/api/games/spin', async (req, res) => {
             });
         }
 
-        // 2. Compute Probabilities & Adjust State Metrics
-        const distributionPick = Math.random() * 100;
-        let winningIndex = 3; // Default: "TRY AGAIN"
-
-        if (distributionPick < 40.0) {
-            winningIndex = 0; // 40% Odds: 10 Pts
-            userRecord.points = (userRecord.points || 0) + 10;
-        } else if (distributionPick < 70.0) {
-            winningIndex = 1; // 30% Odds: 20 Pts
-            userRecord.points = (userRecord.points || 0) + 20;
-        } else if (distributionPick < 85.0) {
-            winningIndex = 2; // 15% Odds: 50 Pts
-            userRecord.points = (userRecord.points || 0) + 50;
-        } else if (distributionPick < 95.0) {
-            winningIndex = 3; // 10% Odds: "TRY AGAIN" (0 Pts)
-        } else if (distributionPick < 99.5) {
-            winningIndex = 4; // 4.5% Odds: 100 Pts
-            userRecord.points = (userRecord.points || 0) + 100;
-        } else {
-            winningIndex = 5; // 0.5% Odds: 500 JACKPOT Pts
-            userRecord.points = (userRecord.points || 0) + 500;
+        // 2. Strict Capital Balance Validation Check Gating
+        // Accessing the coins property (using userRecord.coins based on your profile view metrics)
+        const currentAvailableCoins = parseInt(userRecord.coins || 0);
+        if (currentAvailableCoins < 1) {
+            return res.status(400).json({
+                success: false,
+                error: "Insufficient funds: 1 Coin is required to execute a spin transaction."
+            });
         }
 
-        // 3. Save modified point document values back to database cluster
+        // Deduct exactly 1 play unit fee immediately before computing prizes (Prevents race-conditions)
+        userRecord.coins = currentAvailableCoins - 1;
+
+        // 3. Compute Probabilities matching frontend indices EXACTLY:
+        // [0: 10 USDT, 1: 25 Pts, 2: TRY AGAIN, 3: 100 Pts, 4: 1 TON, 5: 500 Pts, 6: BONUS SPIN, 7: 50 USDT]
+        const distributionPick = Math.random() * 100;
+        let winningIndex = 2; // Default fallback to Index 2: "TRY AGAIN"
+        let rewardNotificationString = "TRY AGAIN";
+
+        if (distributionPick < 45.0) {
+            // 45% Odds: 25 Points
+            winningIndex = 1;
+            userRecord.points = (userRecord.points || 0) + 25;
+            rewardNotificationString = "25 Points Added";
+        } else if (distributionPick < 75.0) {
+            // 30% Odds: TRY AGAIN
+            winningIndex = 2;
+            rewardNotificationString = "Try Again Next Time";
+        } else if (distributionPick < 90.0) {
+            // 15% Odds: 100 Points
+            winningIndex = 3;
+            userRecord.points = (userRecord.points || 0) + 100;
+            rewardNotificationString = "100 Points Added";
+        } else if (distributionPick < 96.0) {
+            // 6% Odds: Extra Reward Bonus Spin! (Refunds the 1 coin cost)
+            winningIndex = 6;
+            userRecord.coins = (userRecord.coins || 0) + 1;
+            rewardNotificationString = "1 Free Extra Spin Awarded";
+        } else if (distributionPick < 98.5) {
+            // 2.5% Odds: High Reward Tier 500 Points
+            winningIndex = 5;
+            userRecord.points = (userRecord.points || 0) + 500;
+            rewardNotificationString = "500 Premium Points Added";
+        } else if (distributionPick < 99.5) {
+            // 1.0% Odds: Premium USDT Tier (10 USDT)
+            winningIndex = 0;
+            userRecord.balance = (userRecord.balance || 0) + 10.00;
+            rewardNotificationString = "10.00 USDT Added to Wallet";
+        } else {
+            // 0.5% Odds: Ultra Jackpot Grand Tier (50 USDT)
+            winningIndex = 7;
+            userRecord.balance = (userRecord.balance || 0) + 50.00;
+            rewardNotificationString = "50.00 USDT Grand Prize Added!";
+        }
+
+        // Note: Frontend Segment Index 4 (1 TON) is reserved for future promotional allocation distribution rules
+
+        // 4. Save modified values back to database cluster
         await userRecord.save();
 
-        // 4. Return data synchronization properties back to your front-end fetch
+        // 5. Return data synchronization properties matching frontend state engines expectations
         return res.status(200).json({
             success: true,
             winningIndex: winningIndex,
-            newCoinBalance: parseFloat(userRecord.balance || 0),
-            newPointBalance: parseFloat(userRecord.points || 0)
+            rewardText: rewardNotificationString,
+            newCoinBalance: parseInt(userRecord.coins || 0),
+            newPointBalance: parseFloat(userRecord.points || 0),
+            newWalletBalance: parseFloat(userRecord.balance || 0)
         });
 
     } catch (networkExceptionTrace) {
-        console.error("Fatal error inside app.post('/api/games/spin') execution node:", networkExceptionTrace);
+        console.error("Fatal error inside secure lucky-spin execution node:", networkExceptionTrace);
         return res.status(500).json({ 
             success: false, 
             error: "Internal server error updating game balance matrices." 
         });
     }
 });
-
 
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
 setInterval(async () => {
