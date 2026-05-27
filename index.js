@@ -1352,7 +1352,7 @@ app.post('/api/secure/lucky-spin', async (req, res) => {
             rewardNotificationString = "100 Points Added";
         } else if (distributionPick < 96.0) {
             // 6% Odds: Extra Reward Bonus Spin! (Refunds the 1 coin cost)
-            winningIndex = 6;
+            winningIndex = 4;
             userRecord.coins = (userRecord.coins || 0) + 1;
             rewardNotificationString = "1 Free Extra Spin Awarded";
         } else if (distributionPick < 98.5) {
@@ -1362,7 +1362,7 @@ app.post('/api/secure/lucky-spin', async (req, res) => {
             rewardNotificationString = "500 Premium Points Added";
         } else if (distributionPick < 99.5) {
             // 1.0% Odds: Premium USDT Tier (10 USDT)
-            winningIndex = 0;
+            winningIndex = 6;
             userRecord.balance = (userRecord.balance || 0) + 10.00;
             rewardNotificationString = "10.00 USDT Added to Wallet";
         } else {
