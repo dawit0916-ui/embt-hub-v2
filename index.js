@@ -1109,7 +1109,7 @@ app.get('/api/admin/users', validateAdmin, async (req, res) => {
 // 🛠️ POST UPDATE MODIFIER (Instantly modify users from your front-end interface)
 app.post('/api/admin/user/update', validateAdmin, async (req, res) => {
     try {
-        const { target_user_id, balance, points, is_banned, red_flag, tasks_added } = req.body;
+        const { target_user_id, balance, points, coins, is_banned, red_flag, tasks_added } = req.body;
 
         if (!target_user_id) {
             return res.status(400).json({ error: "Target Identity Specification parameter is missing." });
@@ -1119,6 +1119,7 @@ app.post('/api/admin/user/update', validateAdmin, async (req, res) => {
         let dynamicUpdates = {};
         if (balance !== undefined) dynamicUpdates.balance = Number(balance);
         if (points !== undefined) dynamicUpdates.points = Number(points);
+        if (coins !== undefined) dynamicUpdates.coins = Number(coins);
         if (tasks_added !== undefined) dynamicUpdates.tasks_added = Number(tasks_added);
         if (is_banned !== undefined) dynamicUpdates.is_banned = Boolean(is_banned);
         if (red_flag !== undefined) dynamicUpdates.red_flag = Boolean(red_flag);
@@ -1142,6 +1143,7 @@ app.post('/api/admin/user/update', validateAdmin, async (req, res) => {
                 user_id: updatedUser.user_id,
                 balance: updatedUser.balance,
                 points: updatedUser.points,
+                coins: updatedUser.coins,
                 is_banned: updatedUser.is_banned,
                 red_flag: updatedUser.red_flag
             }
