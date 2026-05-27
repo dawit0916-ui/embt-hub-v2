@@ -825,6 +825,7 @@ app.get('/api/secure/profile', async (req, res) => {
                 user_id: user.user_id,
                 balance: user.balance || 0, // Yields your true chatbot value (e.g. 0.7805)
                 points: user.points || 0.00,
+                coins: user.coins || 0.00,
                 total_earned: user.total_earned || 0,
                 referrals: user.referralCount || 0,
                 tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
@@ -846,6 +847,7 @@ app.get('/api/secure/profile', async (req, res) => {
                 success: false,
                 balance: 0,
                 points: 0,
+                coins: 0,
                 total_earned: 0,
                 referrals: 0,
                 tasksCompletedCount: 0,
@@ -958,6 +960,7 @@ app.get('/api/admin/directory', validateAdmin, async (req, res) => {
             username: user.username || null,
             balance: user.balance || 0,
             points: user.points || 0.00,
+            coins: user.coins || 0.00,
             is_banned: user.is_banned || false
         }));
 
@@ -1006,6 +1009,7 @@ app.get('/api/user/:id', async (req, res) => {
                 user_id: user.user_id,
                 balance: user.balance || 0,
                 points: user.points || 0.00,
+                coins: user.coins || 0.00,
                 total_earned: user.total_earned || 0,
                 referrals: user.referralCount || 0,
                 // Calculate total completed tasks by measuring the array length safely
@@ -1023,6 +1027,7 @@ app.get('/api/user/:id', async (req, res) => {
                 success: false,
                 balance: 0, 
                 points: 0,
+                coins: 0,
                 total_earned: 0,
                 referrals: 0, 
                 tasksCompletedCount: 0,
@@ -1090,6 +1095,7 @@ app.get('/api/admin/users', validateAdmin, async (req, res) => {
                 first_name: u.first_name || 'Member',
                 balance: u.balance || 0,
                 points: u.points || 0,
+                coins: u.coinss || 0,
                 total_earned: u.total_earned || 0,
                 referralCount: u.referralCount || 0,
                 tasksCompleted: u.completed_tasks ? u.completed_tasks.length : 0,
