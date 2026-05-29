@@ -527,7 +527,7 @@ bot.action('pay_penalty', async (ctx) => {
         await User.updateOne({ user_id: ctx.from.id }, { 
             $inc: { balance: -FEE },
             $set: { red_flag: false },
-            $push: { history: { type: '🚩 Penalty Paid', amount: `-${FEE} USDT', status: '✅ Cleared`, date: new Date() } }
+            $push: { history: { type: '🚩 Penalty Paid', amount: `-${FEE} USDT`, status: '✅ Cleared', date: new Date() } }
         });
         ctx.editMessageText("✅ *Penalty Paid Successfully!*\n\nYour account has been cleared. You can now withdraw your earnings again.", { parse_mode: 'Markdown' });
     } catch (error) {
@@ -829,6 +829,7 @@ app.get('/api/secure/profile', async (req, res) => {
                 total_earned: user.total_earned || 0,
                 referrals: user.referralCount || 0,
                 tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
+                completed_tasks: user.completed_tasks || [],
                 is_banned: user.is_banned || false,
                 red_flag: user.red_flag || false,
                 tasks_added: user.tasks_added || 0,
@@ -1095,7 +1096,7 @@ app.get('/api/admin/users', validateAdmin, async (req, res) => {
                 first_name: u.first_name || 'Member',
                 balance: u.balance || 0,
                 points: u.points || 0,
-                coins: u.coinss || 0,
+                coins: u.coins || 0,
                 total_earned: u.total_earned || 0,
                 referralCount: u.referralCount || 0,
                 tasksCompleted: u.completed_tasks ? u.completed_tasks.length : 0,
@@ -1370,7 +1371,7 @@ app.post('/api/secure/lucky-spin', async (req, res) => {
             rewardNotificationString = "500 Premium Points Added";
         } else if (distributionPick < 99.5) {
             // 1.0% Odds: Premium USDT Tier (10 USDT)
-            winningIndex = 6;
+            winningIndex = 0;
             userRecord.balance = (userRecord.balance || 0) + 10.00;
             rewardNotificationString = "10.00 USDT Added to Wallet";
         } else {
