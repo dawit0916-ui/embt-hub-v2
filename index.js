@@ -24,6 +24,7 @@ const User = mongoose.model('User', new mongoose.Schema({
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
     current_state: String,
+    welcome_message_id: { type: Number, default: null },
     red_flag: { type: Boolean, default: false },
     referralCount: { type: Number, default: 0 },
     has_withdrawn_once: { type: Boolean,default: false },
@@ -304,19 +305,21 @@ bot.start(async (ctx) => {
             }
         }
 
-        const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app'; 
+        const MINI_APP_URL = 'http://mini-app-ui-embta.vercel.app'; 
         const sentMsg = await ctx.reply(
-            `👋 *Welcome to EMBT!*\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
-            {
-                parse_mode: 'Markdown',
-                ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]])
-            }
-        );
+    `👋 Welcome to EMBT!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
+    {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+            [Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]
+        ])
+    }
+);
 
-        await User.updateOne(
-            { user_id: userId }, 
-            { $set: { current_state: `delete_welcome_${sentMsg.message_id}` } }
-        );
+await User.updateOne(
+    { user_id: userId },
+ { $set: { welcome_message_id: sentMsg.message_id  }}
+);
     } catch (error) {
         console.error("Error in bot.start:", error);
         ctx.reply("⚠️ Error initializing your dashboard. Please try /start again.");
@@ -998,12 +1001,28 @@ app.get('/api/user/:id', async (req, res) => {
         
         if (user) {
             // 1. PRESERVED BOT LOGIC: Delete welcome message if marked for cleanup
-            if (user.current_state && user.current_state.startsWith('delete_welcome_')) {
-                const msgId = parseInt(user.current_state.split('_')[2]);
-                bot.telegram.deleteMessage(userId, msgId).catch(() => {});
-                await User.updateOne({ user_id: userId }, { $set: { current_state: null } });
-            }
+         if (user.welcome_message_id) {
+    try {
+        await bot.telegram.deleteMessage(
+            userId,
+            user.welcome_message_id
+        );
 
+        await User.updateOne(
+            { user_id: userId },
+            {
+                $unset: {
+                    welcome_message_id: ""
+                }
+            }
+        );
+    } catch (err) {
+        console.log(
+            `Failed to delete welcome message for ${userId}:`,
+            err.message
+        );
+    }
+         }
             // 2. UPGRADED RESPONSE: Return complete metrics profile matrix
             return res.json({
                 success: true,
