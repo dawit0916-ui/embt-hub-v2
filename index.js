@@ -305,7 +305,7 @@ bot.start(async (ctx) => {
             }
         }
 
-        const MINI_APP_URL = 'http://mini-app-ui-embta.vercel.app'; 
+        const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app'; 
         const sentMsg = await ctx.reply(
     `👋 Welcome to EMBT!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
     {
@@ -321,9 +321,14 @@ await User.updateOne(
  { $set: { welcome_message_id: sentMsg.message_id  }}
 );
     } catch (error) {
-        console.error("Error in bot.start:", error);
-        ctx.reply("⚠️ Error initializing your dashboard. Please try /start again.");
-    }
+    console.error("START ERROR:");
+    console.error(error);
+    console.error(error.stack);
+
+    return ctx.reply(
+        `⚠️ Error initializing your dashboard.\n\n${error.message}`
+    );
+  }
 });
 
 bot.hears('👥 Affiliate', async (ctx) => {
