@@ -827,6 +827,17 @@ app.get('/api/secure/profile', async (req, res) => {
         const user = await User.findOne({ user_id: userId });
 
         if (user) {
+         if (user.welcome_message_id) {
+                try {
+                    await bot.telegram.deleteMessage(userId, user.welcome_message_id);
+                    await User.updateOne(
+                        { user_id: userId },
+                        { $unset: { welcome_message_id: "" } }
+                    );
+                } catch (err) {
+                    console.log(`Failed to delete welcome message for ${userId}:`, err.message);
+                }
+         }
             // Build a fully mapped data profile configuration matrix block
             const accountMetricsPayload = {
                 success: true,
@@ -997,75 +1008,6 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
         bot.telegram.sendMessage(request.user_id, status === 'approved' ? "✅ Your deployment withdrawal transaction cleared mapping successfully!" : "❌ Payout routing request declined.");
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/user/:id', async (req, res) => {
-    try {
-        const userId = Number(req.params.id); 
-        const user = await User.findOne({ user_id: userId });
-        
-        if (user) {
-            // 1. PRESERVED BOT LOGIC: Delete welcome message if marked for cleanup
-         if (user.welcome_message_id) {
-    try {
-        await bot.telegram.deleteMessage(
-            userId,
-            user.welcome_message_id
-        );
-
-        await User.updateOne(
-            { user_id: userId },
-            {
-                $unset: {
-                    welcome_message_id: ""
-                }
-            }
-        );
-    } catch (err) {
-        console.log(
-            `Failed to delete welcome message for ${userId}:`,
-            err.message
-        );
-    }
-         }
-            // 2. UPGRADED RESPONSE: Return complete metrics profile matrix
-            return res.json({
-                success: true,
-                user_id: user.user_id,
-                balance: user.balance || 0,
-                points: user.points || 0.00,
-                coins: user.coins || 0.00,
-                total_earned: user.total_earned || 0,
-                referrals: user.referralCount || 0,
-                // Calculate total completed tasks by measuring the array length safely
-                tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
-                // Restriction markers
-                is_banned: user.is_banned || false,
-                red_flag: user.red_flag || false,
-                // Community tasks counter tracking
-                tasks_added: user.tasks_added || 0,
-                isAdmin: admins.includes(userId)
-            });
-        } else { 
-            // 3. FALLBACK STRUCTURE: Clean return defaults to prevent frontend errors if user isn't found
-            return res.json({ 
-                success: false,
-                balance: 0, 
-                points: 0,
-                coins: 0,
-                total_earned: 0,
-                referrals: 0, 
-                tasksCompletedCount: 0,
-                tasks_added: 0,
-                isAdmin: false,
-                is_banned: false,
-                red_flag: false
-            }); 
-        }
-    } catch (err) { 
-        console.error("Backend profile fetch fault:", err);
-        res.status(500).json({ error: "Internal Context Fault" }); 
-    }
 });
 
 // 📊 GET USER DIRECTORY (With Pagination, Search, and Status Filtering)
