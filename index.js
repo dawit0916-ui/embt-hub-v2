@@ -896,38 +896,6 @@ app.post('/api/admin/settings', validateAdmin, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// 🌍 PUBLIC ROUTE: Accessible by all users to load active tasks
-app.get('/api/tasks', async (req, res) => {
-    try {
-        // Fetch all tasks from the database collection
-        const tasks = await Task.find({}).lean();
-
-        // Map the database keys securely to guarantee the frontend never reads 'undefined'
-        const safeTasksPayload = tasks.map(task => ({
-            id: task.id,
-            title: task.title || 'Untitled Task',
-            url: task.url || '#',
-            description: task.description || '',
-            // Fix Bug 1: Provide BOTH naming structures so old and new frontends work!
-            image: task.image || '', 
-            reward: task.reward || 0,
-            rewardAmt: task.reward || 0, 
-            // Fix Bug 2: Normalize the category names (maps 'Education' or 'Education' smoothly to 'edu')
-            category: (task.category && task.category.toLowerCase().startsWith('edu')) ? 'edu' : (task.category || 'main'),
-            type: task.type || 'social',
-            taskType: task.type || 'social'
-        }));
-
-        return res.json({
-            success: true,
-            tasks: safeTasksPayload
-        });
-
-    } catch (err) {
-        console.error("Public task catalog stream error:", err);
-        return res.status(500).json({ success: false, error: "Task matrix stream offline." });
-    }
-});
 
 app.get('/api/admin/tasks', validateAdmin, async (req, res) => res.json(await Task.find()));
 
@@ -1141,15 +1109,6 @@ app.post('/api/admin/reply-ticket', validateAdmin, async (req, res) => {
     res.json({ success: true });
 });
 
-app.post('/api/tasks/claim', async (req, res) => {
-    const { user_id, task_id, reward } = req.body;
-    const user = await User.findOne({ user_id: parseInt(user_id) });
-    if (!user) return res.status(404).json({ error: "Profile missing" });
-    if (user.completed_tasks.includes(task_id)) return res.status(400).json({ error: "Entity duplicate state allocation" });
-
-    await User.updateOne({ user_id: user.user_id }, { $inc: { balance: parseFloat(reward) }, $push: { completed_tasks: task_id } });
-    res.json({ success: true });
-});
 
 app.post('/api/withdraw/request', async (req, res) => {
     const { user_id, amount, address, method } = req.body;
@@ -1190,39 +1149,99 @@ app.get('/api/secure/notifications', validateInitData, async (req, res) => {
     res.json(await Notification.find({ $or: [{ targetType: 'all' }, { targetType: 'all_members' }, { targetType: 'specific_member', targetUserId: userId }] }).sort({ createdAt: -1 }));
 });
 
+
 app.get('/api/secure/available-tasks', validateInitData, async (req, res) => {
-    const user = await User.findOne({ user_id: req.tgUser.id });
-    res.json(await Task.find({ id: { $nin: user?.completed_tasks || [] }, enabled: true }));
+    try {
+        // 1. Resolve user profile structure from database safely
+        const user = await User.findOne({ user_id: req.tgUser.id });
+        
+        // 🚨 FIX: Guard against null records to block un-provisioned database views
+        if (!user) {
+            return res.status(404).json({ error: "User profile context un-synchronized or missing." });
+        }
+
+        // 2. Fetch only tasks the authenticated user hasn't finished yet
+        const tasks = await Task.find({ 
+            id: { $nin: user.completed_tasks || [] }, 
+            enabled: true 
+        });
+
+        return res.json(tasks);
+
+    } catch (err) {
+        console.error("Secure task matrix pipeline error:", err);
+        return res.status(500).json({ error: "Internal Security Pipeline Fault" });
+    }
 });
 
 app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
-    const { taskId } = req.body;
-    const userId = req.tgUser.id;
+    try {
+        const { taskId } = req.body;
+        const userId = req.tgUser.id;
 
-    const user = await User.findOne({ user_id: userId });
-    if (!user) return res.status(404).json({ error: "User identity resolution failure" });
-    if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
+        // 1. Fetch user profile from database
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ error: "User identity resolution failure" });
+        if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
 
-    const task = await Task.findOne({ id: taskId });
-    if (!task) return res.status(404).json({ error: "Task entity resolution failure" });
+        // 2. Fetch the task from database to get the AUTHORITATIVE reward amount
+        const task = await Task.findOne({ id: taskId });
+        if (!task) return res.status(404).json({ error: "Task entity resolution failure" });
 
-    const settings = await getSettings(); 
+        const settings = await getSettings(); 
 
-    await User.updateOne({ user_id: userId }, { $inc: { balance: task.reward, referral_tasks_done: 1 }, $push: { completed_tasks: taskId } });
+        // 3. Track state changes cleanly locally before applying mutations
+        const currentTasksDone = (user.referral_tasks_done || 0) + 1;
 
-    if (user.referred_by) {
-        const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
-        await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
+        // 4. Update the user account with secure server-side arithmetic variables
+        await User.updateOne(
+            { user_id: userId }, 
+            { 
+                $inc: { balance: task.reward, referral_tasks_done: 1 }, 
+                $push: { completed_tasks: taskId } 
+            }
+        );
+
+        // 5. Handle standard downline commission allocations safely
+        if (user.referred_by) {
+            const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
+            await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
+        }
+
+        // 6. Milestone Engine Evaluation using local counter logic to prevent race gaps
+        if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {
+            
+            // Re-verify under an atomic conditional update wrapper to block duplicate claiming attacks
+            const updateReferrer = await User.updateOne(
+                { user_id: userId, referral_paid: { $ne: true } },
+                { $set: { referral_paid: true } }
+            );
+
+            if (updateReferrer.modifiedCount > 0) {
+                await User.updateOne(
+                    { user_id: user.referred_by }, 
+                    { $inc: { balance: settings.ref_bonus_amount } }
+                );
+                
+                try {
+                    await bot.telegram.sendMessage(
+                        user.referred_by, 
+                        `🎊 *Milestone Bonus:* Your friend finalized 3 operations. Awarded ${settings.ref_bonus_amount} USDT.`, 
+                        { parse_mode: 'Markdown' }
+                    );
+                } catch (botErr) {
+                    console.error("Failed to push Telegram milestone notification message:", botErr.message);
+                }
+            }
+        }
+        
+        return res.json({ success: true });
+
+    } catch (err) {
+        console.error("Claim system execution failure exception trace:", err);
+        return res.status(500).json({ error: "Internal Process Completion Fault" });
     }
-
-    if (user.referred_by && !user.referral_paid && (user.referral_tasks_done + 1) >= 3) {
-        await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: settings.ref_bonus_amount } });
-        await User.updateOne({ user_id: userId }, { $set: { referral_paid: true } });
-        bot.telegram.sendMessage(user.referred_by, `🎊 *Milestone Bonus:* Friend finalized 3 operations. Awarded ${settings.ref_bonus_amount} USDT.`);
-    }
-    res.json({ success: true });
 });
-
 app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Blank body payload allocation" });
