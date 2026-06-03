@@ -168,6 +168,7 @@ const validateInitData = (req, res, next) => {
     const initData = req.headers['x-telegram-init-data'];
     if (!initData) return res.status(401).json({ error: "No init data provided" });
 
+
     const urlParams = new URLSearchParams(initData);
     const hash = urlParams.get('hash');
     urlParams.delete('hash');
@@ -199,6 +200,80 @@ const validateAdmin = async (req, res, next) => {
     req.adminUser = user;
     next();
 };
+    // ==========================================================================
+// UNIFIED ARCHITECTURAL MAINTENANCE INTERCEPTOR LAYER
+// ==========================================================================
+
+const ARCHITECTURAL_MAINTENANCE_CONFIG = {
+    get enabled() { return process.env.MAINTENANCE_ENABLED === 'true'; },
+    get bypassIds() { 
+        return (process.env.MAINTENANCE_BYPASS_IDS || '')
+            .split(',')
+            .map(id => Number(id.trim()))
+            .filter(id => !isNaN(id));
+    },
+    get metadata() {
+        try {
+            return JSON.parse(process.env.MAINTENANCE_METADATA || '{}');
+        } catch (e) {
+            return {
+                message: "System upgrading. Please check back shortly.",
+                targetTime: Date.now() + 3600000,
+                accentAsset: "🛠️"
+            };
+        }
+    }
+};
+
+function enforceGlobalMaintenanceGate(req, res, next) {
+    // 1. If maintenance mode is disabled in environment settings, pass control to next handler instantly
+    if (!ARCHITECTURAL_MAINTENANCE_CONFIG.enabled) {
+        return next();
+    }
+
+    // 2. Dynamic multi-token parsing engine (Resolves both your structural Auth strategies)
+    let extractedTelegramId = null;
+
+    if (req.tgUser && req.tgUser.id) {
+        // Strategy A: Catches requests matching pre-routed validateInitData layers
+        extractedTelegramId = Number(req.tgUser.id);
+    } else {
+        // Strategy B: Inline Header Parse fallback for Wallet/Profile/Spin routes
+        try {
+            const rawAuthHeaderDataString = req.headers['x-telegram-init-data'];
+            const cleanRawDataString = rawAuthHeaderDataString && rawAuthHeaderDataString.startsWith('tma ') 
+                ? rawAuthHeaderDataString.substring(4) 
+                : '';
+                
+            if (cleanRawDataString) {
+                const urlParams = new URLSearchParams(cleanRawDataString);
+                const userRaw = urlParams.get('user');
+                if (userRaw) {
+                    const parsed = JSON.parse(userRaw);
+                    extractedTelegramId = Number(parsed.id);
+                }
+            }
+        } catch (err) {
+            // Silence exception parsing to drop execution through to safety evaluation blocks
+        }
+    }
+
+    // 3. Evaluate authorized tester bypass lists safely
+    if (extractedTelegramId && ARCHITECTURAL_MAINTENANCE_CONFIG.bypassIds.includes(extractedTelegramId)) {
+        console.log(`[Maintenance Bypass] Authorized access permitted for tester: ${extractedTelegramId}`);
+        return next();
+    }
+
+    // 4. Reject all standard users with an HTTP 503 containing telemetry properties
+    return res.status(503).json({
+        maintenance: true,
+        serverTime: Date.now(),
+        ...ARCHITECTURAL_MAINTENANCE_CONFIG.metadata
+    });
+}
+
+// Global hook injection covering every secure endpoint transaction route natively
+app.use('/api/secure', enforceGlobalMaintenanceGate);
 
 // --- GLOBAL BOT MIDDLEWARES ---
 bot.use(async (ctx, next) => {
