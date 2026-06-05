@@ -13,6 +13,7 @@ const ADMIN_ID = 7329000880;
 
 app.use(cors()); 
 app.use(express.json());
+app.use('/api', enforceGlobalMaintenanceGate);
 
 // --- DATABASE SCHEMAS ---
 
@@ -133,6 +134,31 @@ function verifySecureEcosystemSessionToken(req) {
     const dataCheckString = dataCheckArr.join('\n');
     
     const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    
+    if (calculatedHash !== hash) return { valid: false };
+    
+    const userRaw = urlParams.get('user');
+    return { valid: true, user: userRaw ? JSON.parse(userRaw) : null };
+}
+// Helper function to validate Telegram Web App initData hashes securely
+function verifyTelegramAuthorization(initDataRaw, botToken) {
+    if (!initDataRaw) return { valid: false };
+    
+    const urlParams = new URLSearchParams(initDataRaw);
+    const hash = urlParams.get('hash');
+    urlParams.delete('hash');
+    
+    // Sort keys alphabetically as required by Telegram specification
+    const dataCheckArr = [];
+    for (const [key, value] of urlParams.entries()) {
+        dataCheckArr.push(`${key}=${value}`);
+    }
+    dataCheckArr.sort();
+    const dataCheckString = dataCheckArr.join('\n');
+    
+    // Perform cryptographic verification signature validations
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
     const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
     
     if (calculatedHash !== hash) return { valid: false };
@@ -274,7 +300,7 @@ try {
 }
 
 // Global hook injection covering every secure endpoint transaction route natively
-app.use('/api', enforceGlobalMaintenanceGate);
+
 
 // --- GLOBAL BOT MIDDLEWARES ---
 bot.use(async (ctx, next) => {
@@ -1333,31 +1359,6 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
 });
 
 
-// Helper function to validate Telegram Web App initData hashes securely
-function verifyTelegramAuthorization(initDataRaw, botToken) {
-    if (!initDataRaw) return { valid: false };
-    
-    const urlParams = new URLSearchParams(initDataRaw);
-    const hash = urlParams.get('hash');
-    urlParams.delete('hash');
-    
-    // Sort keys alphabetically as required by Telegram specification
-    const dataCheckArr = [];
-    for (const [key, value] of urlParams.entries()) {
-        dataCheckArr.push(`${key}=${value}`);
-    }
-    dataCheckArr.sort();
-    const dataCheckString = dataCheckArr.join('\n');
-    
-    // Perform cryptographic verification signature validations
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    
-    if (calculatedHash !== hash) return { valid: false };
-    
-    const userRaw = urlParams.get('user');
-    return { valid: true, user: userRaw ? JSON.parse(userRaw) : null };
-}
 
 app.post('/api/secure/lucky-spin', async (req, res) => {
     try {
