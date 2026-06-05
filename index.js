@@ -61,7 +61,10 @@ const Ticket = mongoose.model('Ticket', new mongoose.Schema({
 
 const Task = mongoose.model('Task', new mongoose.Schema({
     id: String, 
-    name: String, 
+    title: String, 
+    description: String,
+    image: String,      // Fixed: Explicitly declare image string tracking
+    category: String,
     url: String, 
     reward: Number, 
     type: String, 
