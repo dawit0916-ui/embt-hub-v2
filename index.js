@@ -238,24 +238,25 @@ function enforceGlobalMaintenanceGate(req, res, next) {
         // Strategy A: Catches requests matching pre-routed validateInitData layers
         extractedTelegramId = Number(req.tgUser.id);
     } else {
-        // Strategy B: Inline Header Parse fallback for Wallet/Profile/Spin routes
-        try {
-            const rawAuthHeaderDataString = req.headers['x-telegram-init-data'];
-            const cleanRawDataString = rawAuthHeaderDataString && rawAuthHeaderDataString.startsWith('tma ') 
-                ? rawAuthHeaderDataString.substring(4) 
-                : '';
-                
-            if (cleanRawDataString) {
-                const urlParams = new URLSearchParams(cleanRawDataString);
-                const userRaw = urlParams.get('user');
-                if (userRaw) {
-                    const parsed = JSON.parse(userRaw);
-                    extractedTelegramId = Number(parsed.id);
-                }
-            }
-        } catch (err) {
-            // Silence exception parsing to drop execution through to safety evaluation blocks
+        // Strategy B Fix: Universal safe fallback data parse
+try {
+    const rawAuthHeaderDataString = req.headers['x-telegram-init-data'];
+    if (rawAuthHeaderDataString) {
+        // Strip out 'tma ' if it exists, otherwise use the raw header string directly
+        const cleanRawDataString = rawAuthHeaderDataString.startsWith('tma ') 
+            ? rawAuthHeaderDataString.substring(4) 
+            : rawAuthHeaderDataString;
+            
+        const urlParams = new URLSearchParams(cleanRawDataString);
+        const userRaw = urlParams.get('user');
+        if (userRaw) {
+            const parsed = JSON.parse(userRaw);
+            extractedTelegramId = Number(parsed.id);
         }
+    }
+} catch (err) {
+    // Drop execution through to safety evaluation blocks
+             }
     }
 
     // 3. Evaluate authorized tester bypass lists safely
@@ -273,7 +274,7 @@ function enforceGlobalMaintenanceGate(req, res, next) {
 }
 
 // Global hook injection covering every secure endpoint transaction route natively
-app.use('/api/secure', enforceGlobalMaintenanceGate);
+app.use('/api', enforceGlobalMaintenanceGate);
 
 // --- GLOBAL BOT MIDDLEWARES ---
 bot.use(async (ctx, next) => {
