@@ -298,10 +298,6 @@ try {
         ...ARCHITECTURAL_MAINTENANCE_CONFIG.metadata
     });
 }
-
-// Global hook injection covering every secure endpoint transaction route natively
-
-
 // --- GLOBAL BOT MIDDLEWARES ---
 bot.use(async (ctx, next) => {
     const s = await getSettings();
@@ -898,7 +894,7 @@ app.get('/api/admin/stats', validateAdmin, async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/secure/profile', async (req, res) => {
+app.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
         // 1. Extract the Telegram validation token string from your secureFetch headers
         const authHeader = req.headers['x-telegram-init-data'];
@@ -1212,7 +1208,7 @@ app.post('/api/admin/reply-ticket', validateAdmin, async (req, res) => {
 });
 
 
-app.post('/api/withdraw/request', async (req, res) => {
+app.post('/api/withdraw/request', validateInitData, async (req, res) => {
     const { user_id, amount, address, method } = req.body;
     const user = await User.findOne({ user_id });
     const settings = await getSettings();
@@ -1236,7 +1232,7 @@ app.post('/api/admin/withdraw-action', validateAdmin, async (req, res) => {
     res.json({ success: true });
 });
 
-app.get('/api/user/referrals/:id', async (req, res) => {
+app.get('/api/user/referrals/:id', validateInitData, async (req, res) => {
     const friends = await User.find({ referred_by: parseInt(req.params.id) }).select('username created_at balance');
     res.json({ count: friends.length, friends: friends.map(f => ({ name: f.username || "Anonymous", date: f.created_at, bonus: 0.1 })) });
 });
@@ -1360,7 +1356,7 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
 
 
 
-app.post('/api/secure/lucky-spin', async (req, res) => {
+app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
     try {
         // Extract initialization token injected by your front-end secureFetch engine
         const authHeader = req.headers['x-telegram-init-data'];
@@ -1472,7 +1468,7 @@ app.post('/api/secure/lucky-spin', async (req, res) => {
 
 
 // API ROUTE A: Secure high-efficiency multi-asset P2P validation internal balance ledger transfers pipeline
-app.post('/api/secure/wallet/transfer', async (req, res) => {
+app.post('/api/secure/wallet/transfer', validateInitData, async (req, res) => {
     try {
         const sessionValidationContext = verifySecureEcosystemSessionToken(req);
         if (!sessionValidationContext.valid || !sessionValidationContext.user) {
@@ -1577,7 +1573,7 @@ app.post('/api/secure/wallet/transfer', async (req, res) => {
 });
 
 // API ROUTE B: Secure referral metric checks framework milestone cashout extractor endpoint
-app.post('/api/secure/wallet/withdraw-tier', async (req, res) => {
+app.post('/api/secure/wallet/withdraw-tier', validateInitData, async (req, res) => {
     try {
         const sessionValidationContext = verifySecureEcosystemSessionToken(req);
         if (!sessionValidationContext.valid || !sessionValidationContext.user) {
@@ -1632,7 +1628,7 @@ app.post('/api/secure/wallet/withdraw-tier', async (req, res) => {
 });
 
 // API ROUTE C: Asynchronous statement lazy-loader historical ledger logs query parsing engine
-app.get('/api/secure/wallet/history', async (req, res) => {
+app.get('/api/secure/wallet/history', validateInitData, async (req, res) => {
     try {
         const sessionValidationContext = verifySecureEcosystemSessionToken(req);
         if (!sessionValidationContext.valid || !sessionValidationContext.user) {
