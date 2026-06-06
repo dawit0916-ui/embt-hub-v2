@@ -117,59 +117,6 @@ const WalletTransactionSchema = new mongoose.Schema({
 });
 
 const WalletTransaction = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', WalletTransactionSchema);
-const mainMenu = Markup.keyboard([['📱 Open App', '💸 Earn More'], ['💰 Balance', '👤 Profile'], ['👥 Affiliate']]).resize();
-
-// Middleware function ensuring request payloads have safe extraction authentication tokens mapped
-function verifySecureEcosystemSessionToken(req) {
-    const rawAuthHeaderDataString = req.headers['x-telegram-init-data'];
-    const cleanRawDataString = rawAuthHeaderDataString && rawAuthHeaderDataString.startsWith('tma ') ? rawAuthHeaderDataString.substring(4) : '';
-    
-    if (!cleanRawDataString) return { valid: false };
-    
-    // process.env.BOT_TOKEN must be read from environment variables securely (.env configuration cluster)
-    const urlParams = new URLSearchParams(cleanRawDataString);
-    const hash = urlParams.get('hash');
-    urlParams.delete('hash');
-    
-    const dataCheckArr = [];
-    for (const [key, value] of urlParams.entries()) { dataCheckArr.push(`${key}=${value}`); }
-    dataCheckArr.sort();
-    const dataCheckString = dataCheckArr.join('\n');
-    
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
-    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    
-    if (calculatedHash !== hash) return { valid: false };
-    
-    const userRaw = urlParams.get('user');
-    return { valid: true, user: userRaw ? JSON.parse(userRaw) : null };
-}
-// Helper function to validate Telegram Web App initData hashes securely
-function verifyTelegramAuthorization(initDataRaw, botToken) {
-    if (!initDataRaw) return { valid: false };
-    
-    const urlParams = new URLSearchParams(initDataRaw);
-    const hash = urlParams.get('hash');
-    urlParams.delete('hash');
-    
-    // Sort keys alphabetically as required by Telegram specification
-    const dataCheckArr = [];
-    for (const [key, value] of urlParams.entries()) {
-        dataCheckArr.push(`${key}=${value}`);
-    }
-    dataCheckArr.sort();
-    const dataCheckString = dataCheckArr.join('\n');
-    
-    // Perform cryptographic verification signature validations
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-    
-    if (calculatedHash !== hash) return { valid: false };
-    
-    const userRaw = urlParams.get('user');
-    return { valid: true, user: userRaw ? JSON.parse(userRaw) : null };
-}
-
 // --- SETTINGS FETCHER ---
 async function getSettings() {
     try {
@@ -191,29 +138,56 @@ async function getSettings() {
         return null;
     }
 }
-
-// --- TELEGRAM AUTHENTICATION MIDDLEWARES ---
+// ==========================================================================
+// UNIFIED, HIGH-STABILITY TELEGRAM DATA VALIDATION MIDDLEWARE
+// ==========================================================================
 const validateInitData = (req, res, next) => {
-    const initData = req.headers['x-telegram-init-data'];
-    if (!initData) return res.status(401).json({ error: "No init data provided" });
+    // 1. Fetch case-insensitive headers safely
+    const rawInitData = req.headers['x-telegram-init-data'] || req.headers['X-Telegram-Init-Data'];
+    if (!rawInitData) {
+        return res.status(401).json({ error: "No initialization data payload provided" });
+    }
 
+    try {
+        // 2. Clean out authorization token prefixes ('tma ' or 'Bearer ') safely if passed
+        const cleanInitData = rawInitData.startsWith('tma ') 
+            ? rawInitData.substring(4) 
+            : rawInitData.startsWith('Bearer ') 
+                ? rawInitData.substring(7) 
+                : rawInitData;
 
-    const urlParams = new URLSearchParams(initData);
-    const hash = urlParams.get('hash');
-    urlParams.delete('hash');
-    urlParams.sort();
+        const urlParams = new URLSearchParams(cleanInitData);
+        const hash = urlParams.get('hash');
+        urlParams.delete('hash');
 
-    const dataCheckString = decodeURIComponent(urlParams.toString().replace(/\&/g, '\n'));
-    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
-    const hmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+        // 3. Robust, specification-compliant array sort (Fixes encoding bugs for external accounts)
+        const dataCheckArr = [];
+        for (const [key, value] of urlParams.entries()) {
+            dataCheckArr.push(`${key}=${value}`);
+        }
+        dataCheckArr.sort();
+        const dataCheckString = dataCheckArr.join('\n');
 
-    if (hmac === hash) {
-        req.tgUser = JSON.parse(urlParams.get('user'));
-        next();
-    } else {
-        res.status(403).json({ error: "Invalid data signature" });
+        // 4. Verification signature cryptography validation execution
+        const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
+        const calculatedHmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+        if (calculatedHmac === hash) {
+            // Save the user data securely inside the request loop context
+            const userRaw = urlParams.get('user');
+            req.tgUser = userRaw ? JSON.parse(userRaw) : null;
+            return next();
+        } else {
+            console.warn(`[Security Alert] Cryptographic signature hash verification mismatch.`);
+            return res.status(403).json({ error: "Signature hash mismatch or expired session state." });
+        }
+
+    } catch (err) {
+        console.error("[Auth Parsing Error Stack]:", err.message);
+        return res.status(400).json({ error: "Malformed structural verification payload context." });
     }
 };
+
 
 const validateAdmin = async (req, res, next) => {
     const initData = req.headers['x-telegram-init-data'];
