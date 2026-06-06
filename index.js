@@ -1224,29 +1224,46 @@ app.post('/api/admin/notifications/send', validateAdmin, async (req, res) => {
 
 app.get('/api/secure/notifications', validateInitData, async (req, res) => {
     try {
-        // 1. Double check validation context passes safely
+        // 1. Verify safe extraction context from fixed middleware
         if (!req.tgUser || !req.tgUser.id) {
-            return res.status(401).json({ error: "Unauthorized access: Session signature missing tracking context." });
+            return res.status(401).json({ error: "Unauthorized access: Session signature token context missing." });
         }
 
         const userId = Number(req.tgUser.id);
 
-        // 2. Query matching notifications cleanly using verified field mappings
-        const inboxMessages = await Notification.find({
+        // 2. Query matching notifications tracking variables using your schema parameters
+        const dbAlerts = await Notification.find({
             $or: [
                 { targetType: 'all' },
                 { targetType: 'all_members' },
-                { targetType: 'global' }, // Safety fallback case mapping
-                { targetType: 'specific_member', targetUserId: userId } // Direct targeted matches
+                { targetType: 'specific_member', targetUserId: userId }
             ]
         }).sort({ createdAt: -1 });
 
-        // 3. Return array payload to client mapping layer
-        return res.json(inboxMessages);
+        // 3. 🔥 STRUCTURAL BRIDGE: Map schema keys precisely to frontend UI engine properties
+        const clientFormattedAlerts = dbAlerts.map(doc => {
+            // Convert Mongoose Document to a plain object to prevent wrapper extraction bugs
+            const notif = doc.toObject(); 
+            
+            return {
+                id: notif._id,
+                // Maps your target tracking filter into the client's 'type' field expectation
+                type: notif.targetType || notif.type || 'system', 
+                title: notif.title || 'Notification',
+                // Directly populates the core text payload string
+                message: notif.message || '', 
+                msg: notif.message || '', // Backup alignment matching the frontend's fallbacks
+                read: notif.isRead || false,
+                date: notif.createdAt || new Date()
+            };
+        });
+
+        // 4. Return clean uniform array straight to client syncUserInbox()
+        return res.json(clientFormattedAlerts);
 
     } catch (err) {
-        console.error("Secure notification synchronization loop engine error:", err.message);
-        return res.status(500).json({ error: "Internal ledger processing fault sync." });
+        console.error("Critical error synchronizing notification ledger paths:", err.message);
+        return res.status(500).json({ error: "Internal notification pipeline framework handling error." });
     }
 });
 
