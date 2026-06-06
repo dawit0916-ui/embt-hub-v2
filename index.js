@@ -1200,14 +1200,54 @@ app.get('/api/user/referrals/:id', validateInitData, async (req, res) => {
     res.json({ count: friends.length, friends: friends.map(f => ({ name: f.username || "Anonymous", date: f.created_at, bonus: 0.1 })) });
 });
 
+
 app.post('/api/admin/notifications/send', validateAdmin, async (req, res) => {
-    await new Notification({ ...req.body, targetUserId: req.body.targetUserId ? parseInt(req.body.targetUserId) : null }).save();
-    res.json({ success: true });
+    try {
+        const { title, message, targetType, targetUserId } = req.body;
+
+        const newNotification = new Notification({
+            title: title,
+            message: message,
+            targetType: targetType || 'all_members', // Matches the user-side array criteria
+            targetUserId: targetUserId ? Number(targetUserId) : null, // Forces strict numeric checking
+            createdAt: new Date()
+        });
+
+        await newNotification.save();
+        return res.json({ success: true, message: "Notification broadcast saved." });
+
+    } catch (err) {
+        console.error("Admin Notification Deployment Error:", err.message);
+        return res.status(500).json({ error: "Failed to dispatch administrative broadcast tracking matrices." });
+    }
 });
 
 app.get('/api/secure/notifications', validateInitData, async (req, res) => {
-    const userId = req.tgUser.id; 
-    res.json(await Notification.find({ $or: [{ targetType: 'all' }, { targetType: 'all_members' }, { targetType: 'specific_member', targetUserId: userId }] }).sort({ createdAt: -1 }));
+    try {
+        // 1. Double check validation context passes safely
+        if (!req.tgUser || !req.tgUser.id) {
+            return res.status(401).json({ error: "Unauthorized access: Session signature missing tracking context." });
+        }
+
+        const userId = Number(req.tgUser.id);
+
+        // 2. Query matching notifications cleanly using verified field mappings
+        const inboxMessages = await Notification.find({
+            $or: [
+                { targetType: 'all' },
+                { targetType: 'all_members' },
+                { targetType: 'global' }, // Safety fallback case mapping
+                { targetType: 'specific_member', targetUserId: userId } // Direct targeted matches
+            ]
+        }).sort({ createdAt: -1 });
+
+        // 3. Return array payload to client mapping layer
+        return res.json(inboxMessages);
+
+    } catch (err) {
+        console.error("Secure notification synchronization loop engine error:", err.message);
+        return res.status(500).json({ error: "Internal ledger processing fault sync." });
+    }
 });
 
 
