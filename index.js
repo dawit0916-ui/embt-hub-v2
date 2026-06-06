@@ -1350,40 +1350,40 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
         let winningIndex = 2; // Default fallback to Index 2: "TRY AGAIN"
         let rewardNotificationString = "TRY AGAIN";
 
-        if (distributionPick < 45.0) {
+        if (distributionPick < 45.8) {
             // 45% Odds: 25 Points
             winningIndex = 1;
             userRecord.points = (userRecord.points || 0) + 25;
             rewardNotificationString = "25 Points Added";
-        } else if (distributionPick < 75.0) {
+        } else if (distributionPick < 76.3) {
             // 30% Odds: TRY AGAIN
             winningIndex = 2;
             rewardNotificationString = "Try Again Next Time";
-        } else if (distributionPick < 90.0) {
+        } else if (distributionPick < 90.8) {
             // 15% Odds: 100 Points
             winningIndex = 3;
             userRecord.points = (userRecord.points || 0) + 100;
             rewardNotificationString = "100 Points Added";
-        } else if (distributionPick < 96.0) {
+        } else if (distributionPick < 96.8) {
             // 6% Odds: Extra Reward Bonus Spin! (Refunds the 1 coin cost)
             winningIndex = 4;
             userRecord.coins = (userRecord.coins || 0) + 1;
             rewardNotificationString = "1 Free Extra Spin Awarded";
-        } else if (distributionPick < 98.5) {
+        } else if (distributionPick < 99.3) {
             // 2.5% Odds: High Reward Tier 500 Points
             winningIndex = 5;
             userRecord.points = (userRecord.points || 0) + 500;
             rewardNotificationString = "500 Premium Points Added";
-        } else if (distributionPick < 99.5) {
-            // 1.0% Odds: Premium USDT Tier (10 USDT)
+        } else if (distributionPick < 99.7) {
+            // 0.4% Odds: Premium USDT Tier (10 USDT)
             winningIndex = 0;
-            userRecord.balance = (userRecord.balance || 0) + 10.00;
-            rewardNotificationString = "10.00 USDT Added to Wallet";
+            userRecord.balance = (userRecord.balance || 0) + 1.00;
+            rewardNotificationString = "1.00 USDT Added to Wallet";
         } else {
-            // 0.5% Odds: Ultra Jackpot Grand Tier (50 USDT)
+            // 0.3% Odds: Ultra Jackpot Grand Tier (50 USDT)
             winningIndex = 7;
-            userRecord.balance = (userRecord.balance || 0) + 50.00;
-            rewardNotificationString = "50.00 USDT Grand Prize Added!";
+            userRecord.balance = (userRecord.balance || 0) + 5.00;
+            rewardNotificationString = "5.00 USDT Grand Prize Added!";
         }
 
         // Note: Frontend Segment Index 4 (1 TON) is reserved for future promotional allocation distribution rules
@@ -1395,7 +1395,7 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
         return res.status(200).json({
             success: true,
             winningIndex: winningIndex,
-            rewardText: rewardNotificationString,
+            rewardNotificationString: rewardNotificationString,
             newCoinBalance: parseInt(userRecord.coins || 0),
             newPointBalance: parseFloat(userRecord.points || 0),
             newWalletBalance: parseFloat(userRecord.balance || 0)
