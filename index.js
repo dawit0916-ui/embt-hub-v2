@@ -873,36 +873,20 @@ app.get('/api/admin/stats', validateAdmin, async (req, res) => {
 
 app.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
-        // 1. Extract the Telegram validation token string from your secureFetch headers
-        const authHeader = req.headers['x-telegram-init-data'];
-        if (!authHeader || !authHeader.startsWith('tma ')) {
+        // 1. TRUST THE MIDDLEWARE: validateInitData has already cryptographically verified the user
+        // and populated 'req.tgUser' securely!
+        if (!req.tgUser || !req.tgUser.id) {
             return res.status(401).json({ error: "Unauthorized: Missing authentication token context." });
         }
 
-        // Remove the 'tma ' prefix to read the raw query sequence string
-        const initDataRaw = authHeader.substring(4);
-        
-        // 2. Parse the webapp URL query string to isolate the serialized 'user' object data parameters
-        const urlParams = new URLSearchParams(initDataRaw);
-        const userParamString = urlParams.get('user');
+        const userId = Number(req.tgUser.id);
 
-        if (!userParamString) {
-            return res.status(400).json({ error: "Bad Request: Malformed structural init data session profile payload." });
-        }
-
-        // 3. De-serialize the Telegram identity payload properties securely
-        const telegramContextUser = JSON.parse(userParamString);
-        const userId = Number(telegramContextUser.id);
-
-        if (!userId) {
-            return res.status(400).json({ error: "Invalid identity verification criteria parameter." });
-        }
-
-        // 4. Query your database collection directly using the verified Telegram account ID
+        // 2. Query your database collection directly using the verified Telegram account ID
         const user = await User.findOne({ user_id: userId });
 
         if (user) {
-         if (user.welcome_message_id) {
+            // Optional: Handle cleanup of welcome message if tracked
+            if (user.welcome_message_id) {
                 try {
                     await bot.telegram.deleteMessage(userId, user.welcome_message_id);
                     await User.updateOne(
@@ -912,12 +896,13 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
                 } catch (err) {
                     console.log(`Failed to delete welcome message for ${userId}:`, err.message);
                 }
-         }
-            // Build a fully mapped data profile configuration matrix block
+            }
+
+            // 3. Build a fully mapped data profile configuration matrix block
             const accountMetricsPayload = {
                 success: true,
                 user_id: user.user_id,
-                balance: user.balance || 0, // Yields your true chatbot value (e.g. 0.7805)
+                balance: user.balance || 0, 
                 points: user.points || 0.00,
                 coins: user.coins || 0.00,
                 total_earned: user.total_earned || 0,
@@ -927,7 +912,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
                 is_banned: user.is_banned || false,
                 red_flag: user.red_flag || false,
                 tasks_added: user.tasks_added || 0,
-                isAdmin: admins.includes(userId)
+                isAdmin: typeof admins !== 'undefined' ? admins.includes(userId) : false
             };
 
             // Return BOTH structural patterns to satisfy all frontend setup variations perfectly
@@ -963,6 +948,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
         return res.status(500).json({ error: "Internal Context Security Pipeline Fault" });
     }
 });
+
 
 app.post('/api/admin/settings', validateAdmin, async (req, res) => {
     try {
@@ -1335,25 +1321,9 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
 
 app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
     try {
-        // Extract initialization token injected by your front-end secureFetch engine
-        const authHeader = req.headers['x-telegram-init-data'];
-        const cleanRawDataString = authHeader && authHeader.startsWith('tma ') ? authHeader.substring(4) : '';
         
-        // BOT_TOKEN must be read from environment variables (.env) securely
-        const sessionTokenVerificationResult = verifyTelegramAuthorization(cleanRawDataString, process.env.BOT_TOKEN);
-        
-        if (!sessionTokenVerificationResult.valid || !sessionTokenVerificationResult.user) {
-            return res.status(401).json({ 
-                success: false, 
-                error: "Unauthorized session validation: Signature hash mismatch or expired." 
-            });
-        }
-        
-        const validatedTelegramUserId = sessionTokenVerificationResult.user.id;
-
-        // 1. Fetch matching user database tracking profile
+        const validatedTelegramUserId = req.tgUser.id; // No duplicate parsing needed!
         const userRecord = await User.findOne({ user_id: validatedTelegramUserId });
-
         if (!userRecord) {
             return res.status(404).json({ 
                 success: false, 
@@ -1443,18 +1413,11 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
    PRODUCTION ENGINE LOGIC SECURE CRYPTO WALLET TAB ROUTING SUBSYSTEM
    ========================================================================== */
 
-
-// API ROUTE A: Secure high-efficiency multi-asset P2P validation internal balance ledger transfers pipeline
+// Wallet Transfer Route Cleaned:
 app.post('/api/secure/wallet/transfer', validateInitData, async (req, res) => {
     try {
-        const sessionValidationContext = verifySecureEcosystemSessionToken(req);
-        if (!sessionValidationContext.valid || !sessionValidationContext.user) {
-            return res.status(401).json({ success: false, error: "Unauthorized endpoint validation session mismatch." });
-        }
-        
-        const senderTelegramId = sessionValidationContext.user.id;
+        const senderTelegramId = req.tgUser.id; // Completely bypasses verifySecureEcosystemSessionToken
         const { recipientIdOrUsername, assetType, amount, memo } = req.body;
-        
         const processingVolumeAmount = parseFloat(amount);
         if (isNaN(processingVolumeAmount) || processingVolumeAmount <= 0) {
             return res.status(400).json({ success: false, error: "Invalid financial clearing volume amount constraints parameter specification." });
