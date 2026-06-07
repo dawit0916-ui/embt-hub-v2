@@ -1248,7 +1248,7 @@ app.get('/api/secure/notifications', validateInitData, async (req, res) => {
             return {
                 id: notif._id,
                 // Maps your target tracking filter into the client's 'type' field expectation
-                type: notif.targetType || notif.type || 'system', 
+                type: notif.type || notif.targetType || 'system', 
                 title: notif.title || 'Notification',
                 // Directly populates the core text payload string
                 message: notif.message || '', 
