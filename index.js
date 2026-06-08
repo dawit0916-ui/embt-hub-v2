@@ -1019,7 +1019,16 @@ app.get('/api/admin/directory', validateAdmin, async (req, res) => {
         return res.status(500).json({ success: false, error: 'Database service query failure mapping user collections.' });
     }
 });
-
+app.get('/api/admin/pending-proofs', validateAdmin, async (req, res) => {
+    try {
+        // Proofs are tasks with type 'manual' submitted by users
+        // You need a ProofSubmission model or use existing data
+        // For now return empty array to prevent frontend crash
+        res.json([]);
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 app.get('/api/admin/payouts/pending', validateAdmin, async (req, res) => res.json(await Withdraw.find({ status: 'pending' })));
 
 app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
@@ -1195,9 +1204,24 @@ app.post('/api/admin/withdraw-action', validateAdmin, async (req, res) => {
     res.json({ success: true });
 });
 
-app.get('/api/user/referrals/:id', validateInitData, async (req, res) => {
-    const friends = await User.find({ referred_by: parseInt(req.params.id) }).select('username created_at balance');
-    res.json({ count: friends.length, friends: friends.map(f => ({ name: f.username || "Anonymous", date: f.created_at, bonus: 0.1 })) });
+app.get('/api/secure/referrals', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const friends = await User.find({ referred_by: userId })
+            .select('username first_name tasks_done balance commission_earned completed_tasks');
+        
+        res.json({ 
+            success: true,
+            friends: friends.map(f => ({
+                username: f.username || null,
+                first_name: f.first_name || f.username || 'Anonymous',
+                tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
+                commission_earned: 0
+            }))
+        });
+    } catch(e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 
@@ -1296,21 +1320,16 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
     try {
         const { taskId } = req.body;
         const userId = req.tgUser.id;
-
         // 1. Fetch user profile from database
         const user = await User.findOne({ user_id: userId });
         if (!user) return res.status(404).json({ error: "User identity resolution failure" });
         if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
-
         // 2. Fetch the task from database to get the AUTHORITATIVE reward amount
         const task = await Task.findOne({ id: taskId });
         if (!task) return res.status(404).json({ error: "Task entity resolution failure" });
-
         const settings = await getSettings(); 
-
         // 3. Track state changes cleanly locally before applying mutations
         const currentTasksDone = (user.referral_tasks_done || 0) + 1;
-
         // 4. Update the user account with secure server-side arithmetic variables
         await User.updateOne(
             { user_id: userId }, 
@@ -1319,28 +1338,23 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
                 $push: { completed_tasks: taskId } 
             }
         );
-
         // 5. Handle standard downline commission allocations safely
         if (user.referred_by) {
             const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
             await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
         }
-
         // 6. Milestone Engine Evaluation using local counter logic to prevent race gaps
-        if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {
-            
+        if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {            
             // Re-verify under an atomic conditional update wrapper to block duplicate claiming attacks
             const updateReferrer = await User.updateOne(
                 { user_id: userId, referral_paid: { $ne: true } },
                 { $set: { referral_paid: true } }
             );
-
             if (updateReferrer.modifiedCount > 0) {
                 await User.updateOne(
                     { user_id: user.referred_by }, 
                     { $inc: { balance: settings.ref_bonus_amount } }
-                );
-                
+                );           
                 try {
                     await bot.telegram.sendMessage(
                         user.referred_by, 
@@ -1353,7 +1367,14 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
             }
         }
         
-        return res.json({ success: true });
+        // Fetch updated user to get new balance
+const updatedUser = await User.findOne({ user_id: userId });
+
+return res.json({ 
+    success: true,
+    reward: task.reward,
+    newBalance: updatedUser.balance
+});
 
     } catch (err) {
         console.error("Claim system execution failure exception trace:", err);
@@ -1572,25 +1593,17 @@ app.post('/api/secure/wallet/transfer', validateInitData, async (req, res) => {
 // API ROUTE B: Secure referral metric checks framework milestone cashout extractor endpoint
 app.post('/api/secure/wallet/withdraw-tier', validateInitData, async (req, res) => {
     try {
-        const sessionValidationContext = verifySecureEcosystemSessionToken(req);
-        if (!sessionValidationContext.valid || !sessionValidationContext.user) {
-            return res.status(401).json({ success: false, error: "Session invalid token payload authentication credentials trace mismatch." });
-        }
-
-        const telegramUserId = sessionValidationContext.user.id;
+        const telegramUserId = req.tgUser.id;
         const { inviteThreshold, payoutAmount, network, cryptoAddress } = req.body;
-
         const userProfileRecordNode = await User.findOne({ user_id: telegramUserId });
         if (!userProfileRecordNode) {
             return res.status(404).json({ success: false, error: "Target data cluster path context references not mapped correctly." });
         }
-
         // Database verified referral structure rules check validation 
         const databaseVerifiedInvitesCount = parseInt(userProfileRecordNode.total_invited || 0);
         if (databaseVerifiedInvitesCount < parseInt(inviteThreshold)) {
             return res.status(400).json({ success: false, error: `Ecosystem audit violation: Milestone tracking threshold requirement mapping verification failure.` });
         }
-
         // Prevent milestone duplication attacks or race condition double-claims
         const duplicateClaimVerificationTraceCheck = await WalletTransaction.findOne({
             userId: telegramUserId,
@@ -1627,12 +1640,7 @@ app.post('/api/secure/wallet/withdraw-tier', validateInitData, async (req, res) 
 // API ROUTE C: Asynchronous statement lazy-loader historical ledger logs query parsing engine
 app.get('/api/secure/wallet/history', validateInitData, async (req, res) => {
     try {
-        const sessionValidationContext = verifySecureEcosystemSessionToken(req);
-        if (!sessionValidationContext.valid || !sessionValidationContext.user) {
-            return res.status(401).json({ success: false, error: "Invalid credentials execution trace sequence match mapping." });
-        }
-
-        const telegramUserId = sessionValidationContext.user.id;
+        const telegramUserId = req.tgUser.id;
         const targetSearchStatusFilter = req.query.status || 'pending';
 
         // Query optimizations limits records tracking pipelines indices sorting configurations
