@@ -19,6 +19,7 @@ app.use('/api', enforceGlobalMaintenanceGate);
 
 const User = mongoose.model('User', new mongoose.Schema({
     user_id: Number,
+    first_name: { type: String, default: 'User' },
     username: { type: String, default: null },
     balance: { type: Number, default: 0 },
     points: { type: Number, default: 0.00 },
@@ -1214,7 +1215,7 @@ app.get('/api/secure/referrals', validateInitData, async (req, res) => {
             success: true,
             friends: friends.map(f => ({
                 username: f.username || null,
-                first_name: user.first_name || user.username || 'Anonymous',
+                first_name: f.first_name || f.username || 'Anonymous',
                 tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
                 commission_earned: 0
             }))
