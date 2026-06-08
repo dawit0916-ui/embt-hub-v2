@@ -1214,7 +1214,7 @@ app.get('/api/secure/referrals', validateInitData, async (req, res) => {
             success: true,
             friends: friends.map(f => ({
                 username: f.username || null,
-                first_name: f.first_name || f.username || 'Anonymous',
+                first_name: user.first_name || user.username || 'Anonymous',
                 tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
                 commission_earned: 0
             }))
