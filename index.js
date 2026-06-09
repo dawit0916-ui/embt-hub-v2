@@ -1,4 +1,4 @@
- const { Telegraf, Markup } = require('telegraf');
+const { Telegraf, Markup } = require('telegraf');
 const mongoose = require('mongoose');
 const express = require('express');
 const crypto = require('crypto');
@@ -1438,7 +1438,96 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         return res.status(500).json({ error: "Internal server error." });
     }
 });
+// 1. Manual proof submission
+app.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
+    try {
+        const { taskId, proof } = req.body;
+        const userId = req.tgUser.id;
 
+        const task = await Task.findOne({ id: taskId, enabled: true });
+        if (!task) return res.status(404).json({ error: "Task not found." });
+
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ error: "User not found." });
+        if (user.completed_tasks.includes(taskId)) {
+            return res.status(400).json({ error: "Task already submitted." });
+        }
+
+        // Notify all admins with the proof
+        for (const adminId of admins) {
+            try {
+                await bot.telegram.sendMessage(adminId,
+                    `📋 *Manual Proof Submitted*\n👤 User: \`${userId}\`\n📝 Task: ${task.title}\n💰 Reward: ${task.reward} USDT\n\n🔗 Proof:\n${proof}`,
+                    {
+                        parse_mode: 'Markdown',
+                        ...Markup.inlineKeyboard([
+                            [
+                                Markup.button.callback('✅ Approve', `admin_app_${taskId}_${userId}`),
+                                Markup.button.callback('❌ Reject', `admin_rej_${taskId}_${userId}`)
+                            ]
+                        ])
+                    }
+                );
+            } catch (e) {
+                console.error("Failed to notify admin:", e.message);
+            }
+        }
+
+        return res.json({ success: true });
+
+    } catch (err) {
+        console.error("Submit proof error:", err);
+        return res.status(500).json({ error: "Failed to submit proof." });
+    }
+});
+
+// 2. Ban/unban user
+app.post('/api/admin/users/ban', validateAdmin, async (req, res) => {
+    try {
+        const { userId, banned } = req.body;
+        if (!userId) return res.status(400).json({ error: "User ID required." });
+
+        const updatedUser = await User.findOneAndUpdate(
+            { user_id: Number(userId) },
+            { $set: { is_banned: Boolean(banned) } },
+            { new: true }
+        );
+
+        if (!updatedUser) return res.status(404).json({ error: "User not found." });
+
+        // Notify user via bot
+        try {
+            const msg = banned
+                ? "🚫 Your account has been suspended. Contact support if you believe this is an error."
+                : "✅ Your account has been reinstated. Welcome back!";
+            await bot.telegram.sendMessage(Number(userId), msg);
+        } catch (e) {}
+
+        return res.json({ success: true, is_banned: updatedUser.is_banned });
+
+    } catch (err) {
+        console.error("Ban user error:", err);
+        return res.status(500).json({ error: "Failed to update ban status." });
+    }
+});
+
+// 3. Delete task
+app.delete('/api/admin/tasks/delete/:id', validateAdmin, async (req, res) => {
+    try {
+        const taskId = req.params.id;
+        const result = await Task.deleteOne({ id: taskId });
+
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ error: "Task not found." });
+        }
+
+        return res.json({ success: true });
+
+    } catch (err) {
+        console.error("Delete task error:", err);
+        return res.status(500).json({ error: "Failed to delete task." });
+    }
+});
 app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Blank body payload allocation" });
