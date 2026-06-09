@@ -19,7 +19,7 @@ app.use('/api', enforceGlobalMaintenanceGate);
 
 const User = mongoose.model('User', new mongoose.Schema({
     user_id: Number,
-    first_name: { type: String, default: 'User' },
+    first_name: { type: String, default: null },
     username: { type: String, default: null },
     balance: { type: Number, default: 0 },
     points: { type: Number, default: 0.00 },
@@ -369,6 +369,8 @@ bot.start(async (ctx) => {
         if (!user) {
             user = new User({
                 user_id: userId,
+                username: ctx.from.username || null,
+                first_name: ctx.from.first_name || null,
                 referred_by: referrerId ? parseInt(referrerId) : null,
             });
             await user.save();
@@ -903,6 +905,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
             const accountMetricsPayload = {
                 success: true,
                 user_id: user.user_id,
+                first_name: user.first_name || 'User',
                 balance: user.balance || 0, 
                 points: user.points || 0.00,
                 coins: user.coins || 0.00,
@@ -1214,8 +1217,8 @@ app.get('/api/secure/referrals', validateInitData, async (req, res) => {
         res.json({ 
             success: true,
             friends: friends.map(f => ({
-                username: f.username || null,
-                first_name: f.first_name || f.username || 'Anonymous',
+                username: f.username || `User_${f.user_id}`,
+                first_name: f.first_name || f.username || 'Friend',
                 tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
                 commission_earned: 0
             }))
