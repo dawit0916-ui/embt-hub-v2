@@ -1319,72 +1319,126 @@ app.get('/api/secure/available-tasks', validateInitData, async (req, res) => {
         return res.status(500).json({ error: "Internal Security Pipeline Fault" });
     }
 });
-
 app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
     try {
         const { taskId } = req.body;
         const userId = req.tgUser.id;
-        // 1. Fetch user profile from database
+
+        // 1. Fetch user
         const user = await User.findOne({ user_id: userId });
-        if (!user) return res.status(404).json({ error: "User identity resolution failure" });
-        if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already claimed" });
-        // 2. Fetch the task from database to get the AUTHORITATIVE reward amount
-        const task = await Task.findOne({ id: taskId });
-        if (!task) return res.status(404).json({ error: "Task entity resolution failure" });
-        const settings = await getSettings(); 
-        // 3. Track state changes cleanly locally before applying mutations
+        if (!user) return res.status(404).json({ error: "User not found." });
+        if (user.is_banned) return res.status(403).json({ error: "Account is banned." });
+        if (user.completed_tasks.includes(taskId)) {
+            return res.status(400).json({ error: "Task already claimed." });
+        }
+
+        // 2. Fetch task
+        const task = await Task.findOne({ id: taskId, enabled: true });
+        if (!task) return res.status(404).json({ error: "Task not found." });
+
+        // 3. ✅ TELEGRAM MEMBERSHIP VERIFICATION
+        // Only verify if task type is auto and URL is a t.me link
+        if (task.type === 'auto' && task.url && task.url.includes('t.me/')) {
+            try {
+                // Extract channel username from URL
+                // Handles: t.me/channelname or t.me/+invitecode
+                const urlParts = task.url.split('t.me/')[1];
+                const channelUsername = urlParts.split('/')[0];
+
+                // Skip invite links (t.me/+xxx) - can't verify those
+                if (!channelUsername.startsWith('+')) {
+                    const channelId = '@' + channelUsername;
+
+                    const member = await bot.telegram.getChatMember(channelId, userId);
+
+                    // Check if user is actually a member
+                    const validStatuses = ['member', 'administrator', 'creator'];
+                    if (!validStatuses.includes(member.status)) {
+                        return res.status(400).json({ 
+                            error: "You have not joined the channel yet. Please join first then claim." 
+                        });
+                    }
+                }
+            } catch (verifyErr) {
+                console.error("Membership verification error:", verifyErr.message);
+                // If bot is not admin in channel, skip verification
+                // Don't block the user — just log it
+                console.warn(`Could not verify membership for channel in task ${taskId}. Bot may not be admin.`);
+            }
+        }
+
+        // 4. Get settings
+        const settings = await getSettings();
+
+        // 5. Update user balance and history
         const currentTasksDone = (user.referral_tasks_done || 0) + 1;
-        // 4. Update the user account with secure server-side arithmetic variables
+
         await User.updateOne(
-            { user_id: userId }, 
-            { 
-                $inc: { balance: task.reward, referral_tasks_done: 1 }, 
-                $push: { completed_tasks: taskId } 
+            { user_id: userId },
+            {
+                $inc: { 
+                    balance: task.reward, 
+                    referral_tasks_done: 1,
+                    total_earned: task.reward
+                },
+                $push: { 
+                    completed_tasks: taskId,
+                    history: {
+                        title: task.title,
+                        reward: task.reward,
+                        taskId: taskId,
+                        date: new Date()
+                    }
+                }
             }
         );
-        // 5. Handle standard downline commission allocations safely
+
+        // 6. Referral commission
         if (user.referred_by) {
             const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
-            await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
+            await User.updateOne(
+                { user_id: user.referred_by }, 
+                { $inc: { balance: commission } }
+            );
         }
-        // 6. Milestone Engine Evaluation using local counter logic to prevent race gaps
-        if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {            
-            // Re-verify under an atomic conditional update wrapper to block duplicate claiming attacks
+
+        // 7. Referral milestone bonus
+        if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {
             const updateReferrer = await User.updateOne(
                 { user_id: userId, referral_paid: { $ne: true } },
                 { $set: { referral_paid: true } }
             );
             if (updateReferrer.modifiedCount > 0) {
                 await User.updateOne(
-                    { user_id: user.referred_by }, 
+                    { user_id: user.referred_by },
                     { $inc: { balance: settings.ref_bonus_amount } }
-                );           
+                );
                 try {
                     await bot.telegram.sendMessage(
-                        user.referred_by, 
-                        `🎊 *Milestone Bonus:* Your friend finalized 3 operations. Awarded ${settings.ref_bonus_amount} USDT.`, 
+                        user.referred_by,
+                        `🎊 *Milestone Bonus:* Your friend completed 3 tasks! You earned ${settings.ref_bonus_amount} USDT.`,
                         { parse_mode: 'Markdown' }
                     );
                 } catch (botErr) {
-                    console.error("Failed to push Telegram milestone notification message:", botErr.message);
+                    console.error("Bot notification error:", botErr.message);
                 }
             }
         }
-        
-        // Fetch updated user to get new balance
-const updatedUser = await User.findOne({ user_id: userId });
 
-return res.json({ 
-    success: true,
-    reward: task.reward,
-    newBalance: updatedUser.balance
-});
+        // 8. Return updated balance
+        const updatedUser = await User.findOne({ user_id: userId });
+        return res.json({
+            success: true,
+            reward: task.reward,
+            newBalance: updatedUser.balance
+        });
 
     } catch (err) {
-        console.error("Claim system execution failure exception trace:", err);
-        return res.status(500).json({ error: "Internal Process Completion Fault" });
+        console.error("Claim task error:", err);
+        return res.status(500).json({ error: "Internal server error." });
     }
 });
+
 app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Blank body payload allocation" });
@@ -1661,6 +1715,31 @@ app.get('/api/secure/wallet/history', validateInitData, async (req, res) => {
     } catch (catastrophicCrashInternalEngineTrace) {
         console.error("Crash reading historical transaction records matching pipelines data:", catastrophicCrashInternalEngineTrace);
         return res.status(500).json({ success: false, error: "Internal operational query trace runtime anomaly exception thrown on storage layers." });
+    }
+});
+app.get('/api/secure/history', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const user = await User.findOne({ user_id: userId });
+
+        if (!user) {
+            return res.status(404).json({ error: "User not found." });
+        }
+
+        // Return history array sorted newest first
+        const sortedHistory = (user.history || [])
+            .filter(item => item.title && item.reward)
+            .sort((a, b) => new Date(b.date) - new Date(a.date))
+            .slice(0, 50); // Limit to last 50 entries
+
+        return res.json({ 
+            success: true, 
+            history: sortedHistory 
+        });
+
+    } catch (err) {
+        console.error("History fetch error:", err);
+        return res.status(500).json({ error: "Failed to load history." });
     }
 });
 
