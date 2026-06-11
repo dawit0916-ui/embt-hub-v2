@@ -1575,31 +1575,31 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
         let winningIndex = 2; // Default fallback to Index 2: "TRY AGAIN"
         let rewardNotificationString = "TRY AGAIN";
 
-        if (distributionPick < 45) {
+        if (distributionPick < 25) {
             // 45% Odds: 25 Points
             winningIndex = 1;
             userRecord.points = (userRecord.points || 0) + 25;
             rewardNotificationString = "25 Points Added";
-        } else if (distributionPick < 70) {
+        } else if (distributionPick < 40) {
             // 30% Odds: TRY AGAIN
             winningIndex = 2;
             rewardNotificationString = "Try Again Next Time";
-        } else if (distributionPick < 80) {
+        } else if (distributionPick < 50) {
             // 15% Odds: 100 Points
             winningIndex = 3;
             userRecord.points = (userRecord.points || 0) + 100;
             rewardNotificationString = "100 Points Added";
-        } else if (distributionPick < 85) {
+        } else if (distributionPick < 60) {
             // 6% Odds: Extra Reward Bonus Spin! (Refunds the 1 coin cost)
             winningIndex = 4;
             userRecord.coins = (userRecord.coins || 0) + 1;
             rewardNotificationString = "1 Free Extra Spin Awarded";
-        } else if (distributionPick < 90) {
+        } else if (distributionPick < 70) {
             // 2.5% Odds: High Reward Tier 500 Points
             winningIndex = 5;
             userRecord.points = (userRecord.points || 0) + 500;
             rewardNotificationString = "500 Premium Points Added";
-        } else if (distributionPick < 95) {
+        } else if (distributionPick < 90) {
             // 0.4% Odds: Premium USDT Tier (10 USDT)
             winningIndex = 0;
             userRecord.balance = (userRecord.balance || 0) + 1.00;
