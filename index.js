@@ -1033,23 +1033,93 @@ app.get('/api/admin/pending-proofs', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-app.get('/api/admin/payouts/pending', validateAdmin, async (req, res) => res.json(await Withdraw.find({ status: 'pending' })));
-
-app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
-    const { requestId, status } = req.body;
+app.get('/api/admin/payouts/pending', validateAdmin, async (req, res) => {
     try {
-        const request = await Withdraw.findById(requestId);
-        if (!request) return res.status(404).json({ error: "Context entity identity resolution failure" });
+        const payouts = await WalletTransaction.find({
+            txType: 'WITHDRAWAL',
+            assetType: 'usdt',
+            status: 'pending'
+        })
+        .sort({ timestamp: -1 })
+        .lean();
 
-        request.status = status;
-        await request.save();
+        res.json({
+            success: true,
+            payouts
+        });
 
-        if (status === 'rejected') {
-            await User.updateOne({ user_id: request.user_id }, { $inc: { balance: request.amount } });
+    } catch (error) {
+        console.error('Pending payout fetch error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch pending payouts'
+        });
+    }
+});
+app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
+    const { txId, status } = req.body;
+
+    try {
+        if (!['accepted', 'rejected'].includes(status)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid status'
+            });
         }
-        bot.telegram.sendMessage(request.user_id, status === 'approved' ? "✅ Your deployment withdrawal transaction cleared mapping successfully!" : "❌ Payout routing request declined.");
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+
+        const payout = await WalletTransaction.findOne({
+            txId,
+            txType: 'WITHDRAWAL',
+            status: 'pending'
+        });
+
+        if (!payout) {
+            return res.status(404).json({
+                success: false,
+                error: 'Payout request not found'
+            });
+        }
+
+        payout.status = status;
+        await payout.save();
+
+        // Only refund if you deducted balance during withdrawal creation
+        if (status === 'rejected') {
+            await User.updateOne(
+                { user_id: payout.userId },
+                {
+                    $inc: {
+                        balance: payout.amount
+                    }
+                }
+            );
+        }
+
+        try {
+            await bot.telegram.sendMessage(
+                payout.userId,
+                status === 'accepted'
+                    ? `✅ Withdrawal approved\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}`
+                    : `❌ Withdrawal rejected\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}`
+            );
+        } catch (telegramError) {
+            console.error('Telegram notification error:', telegramError);
+        }
+
+        res.json({
+            success: true,
+            txId: payout.txId,
+            status: payout.status
+        });
+
+    } catch (error) {
+        console.error('Admin payout action error:', error);
+
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
 });
 
 // 📊 GET USER DIRECTORY (With Pagination, Search, and Status Filtering)
@@ -1762,19 +1832,90 @@ app.post('/api/secure/wallet/withdraw-tier', validateInitData, async (req, res) 
         if (duplicateClaimVerificationTraceCheck) {
             return res.status(400).json({ success: false, error: "A clearance payout transaction matched this milestone allocation tier block model already." });
         }
+const withdrawalAmount = parseFloat(payoutAmount);
 
+if (userProfileRecordNode.balance < withdrawalAmount) {
+    return res.status(400).json({
+        success: false,
+        error: "Insufficient balance."
+    });
+}
+
+await User.updateOne(
+    { user_id: telegramUserId },
+    {
+        $inc: {
+            balance: -withdrawalAmount
+        }
+    }
+);
         // Create transaction statement directly into processing queue
-        await WalletTransaction.create({
-            userId: telegramUserId,
-            txType: 'WITHDRAWAL',
-            assetType: 'usdt',
-            amount: parseFloat(payoutAmount),
-            counterpartyId: "EXTERNAL_MAINNET_SETTLEMENT_RESERVE",
-            status: 'pending',
-            network: network,
-            cryptoAddress: cryptoAddress,
-            memo: `Milestone Cashout Allocation Tier Check for ${inviteThreshold} Invites Completed`
-        });
+        const withdrawalTransaction = await WalletTransaction.create({
+    userId: telegramUserId,
+    txType: 'WITHDRAWAL',
+    assetType: 'usdt',
+    amount: parseFloat(payoutAmount),
+    counterpartyId: "EXTERNAL_MAINNET_SETTLEMENT_RESERVE",
+    status: 'pending',
+    network,
+    cryptoAddress,
+    memo: `Milestone Cashout Allocation Tier Check for ${inviteThreshold} Invites Completed`
+});
+   try {
+    const adminMessage = `
+🚨 NEW MILESTONE WITHDRAWAL REQUEST
+
+🆔 TX ID: ${withdrawalTransaction.txId}
+
+👤 User ID: ${userProfileRecordNode.user_id}
+👤 Username: @${userProfileRecordNode.username || 'N/A'}
+👤 First Name: ${userProfileRecordNode.first_name || 'N/A'}
+
+💰 Amount: ${payoutAmount} USDT
+🌐 Network: ${network}
+📬 Address:
+${cryptoAddress}
+
+👥 Referrals: ${databaseVerifiedInvitesCount}
+🎯 Milestone: ${inviteThreshold}
+
+📅 Time: ${new Date().toLocaleString()}
+
+Status: PENDING
+`;
+
+    await bot.telegram.sendMessage(
+        ADMIN_ID,
+        adminMessage
+    );
+
+} catch (adminNotificationError) {
+    console.error(
+        "Admin notification error:",
+        adminNotificationError
+    );
+            }     
+        try {
+    await bot.telegram.sendMessage(
+        telegramUserId,
+        `
+✅ Withdrawal Request Submitted
+
+🆔 TX ID: ${withdrawalTransaction.txId}
+
+💰 Amount: ${payoutAmount} USDT
+🌐 Network: ${network}
+
+Your request has been placed in the review queue.
+You will receive another notification when it is approved or rejected.
+`
+    );
+} catch (userNotificationError) {
+    console.error(
+        "User notification error:",
+        userNotificationError
+    );
+            }
 
         return res.status(200).json({ success: true, message: "Milestone extraction tracking payout successfully registered into clearance queues." });
 
