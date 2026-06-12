@@ -1747,7 +1747,7 @@ app.post('/api/secure/wallet/withdraw-tier', validateInitData, async (req, res) 
             return res.status(404).json({ success: false, error: "Target data cluster path context references not mapped correctly." });
         }
         // Database verified referral structure rules check validation 
-        const databaseVerifiedInvitesCount = parseInt(userProfileRecordNode.total_invited || 0);
+        const databaseVerifiedInvitesCount = parseInt(userProfileRecordNode.referralCount || 0);
         if (databaseVerifiedInvitesCount < parseInt(inviteThreshold)) {
             return res.status(400).json({ success: false, error: `Ecosystem audit violation: Milestone tracking threshold requirement mapping verification failure.` });
         }
