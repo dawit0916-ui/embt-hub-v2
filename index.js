@@ -26,7 +26,7 @@ const User = mongoose.model('User', new mongoose.Schema({
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
     current_state: String,
-    welcome_message_id: { type: Number, default: null },
+    pending_message_cleanup: { type: [Number], default: [] },
     red_flag: { type: Boolean, default: false },
     referralCount: { type: Number, default: 0 },
     has_withdrawn_once: { type: Boolean,default: false },
@@ -276,40 +276,6 @@ try {
         ...ARCHITECTURAL_MAINTENANCE_CONFIG.metadata
     });
 }
-// --- GLOBAL BOT MIDDLEWARES ---
-bot.use(async (ctx, next) => {
-    const s = await getSettings();
-    if (s && s.maintenance_mode && ctx.from && ctx.from.id !== ADMIN_ID) {
-        if (ctx.message) {
-            return ctx.reply("🛠 *Bot Under Maintenance*\n\nWe are currently updating our systems to handle the user load. We will be back online shortly!", { parse_mode: 'Markdown' });
-        }
-        return; 
-    }
-    return next();
-});
-
-const userCooldowns = new Map();
-const COOLDOWN_MS = 1500; 
-
-bot.use(async (ctx, next) => {
-    const userId = ctx.from?.id;
-    if (!userId) return next();
-
-    const now = Date.now();
-    const lastSeen = userCooldowns.get(userId) || 0;
-
-    if (now - lastSeen < COOLDOWN_MS) return;
-
-    userCooldowns.set(userId, now);
-    return next();
-});
-
-setInterval(() => {
-    const now = Date.now();
-    for (const [userId, lastSeen] of userCooldowns.entries()) {
-        if (now - lastSeen > 60000) userCooldowns.delete(userId);
-    }
-}, 60000);
 
 // --- GHOST VALIDATOR ENGINE ---
 async function runGhostValidator(ctx) {
@@ -359,57 +325,51 @@ async function runGhostValidator(ctx) {
 }
 
 // --- TELEGRAM BOT HANDLERS ---
-
 bot.start(async (ctx) => {
-    const referrerId = ctx.startPayload; 
+    const referrerId = ctx.startPayload;
     const userId = ctx.from.id;
+    const currentUsername = ctx.from.username || null;
+    const currentFirstName = ctx.from.first_name || null;
+    const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app';
 
     try {
         let user = await User.findOne({ user_id: userId });
+
         if (!user) {
-            user = new User({
+            user = await User.create({
                 user_id: userId,
-                username: ctx.from.username || null,
-                first_name: ctx.from.first_name || null,
+                username: currentUsername,
+                first_name: currentFirstName,
                 referred_by: referrerId ? parseInt(referrerId) : null,
             });
-            await user.save();
-
             if (referrerId && !isNaN(parseInt(referrerId))) {
-                await User.updateOne(
-                    { user_id: parseInt(referrerId) },
-                    { $inc: { referralCount: 1 } }
-                );
+                await User.updateOne({ user_id: parseInt(referrerId) }, { $inc: { referralCount: 1 } });
             }
+        } else {
+            await User.updateOne(
+                { user_id: userId },
+                { $set: { username: currentUsername, first_name: currentFirstName } }
+            );
         }
 
-        const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app'; 
         const sentMsg = await ctx.reply(
-    `👋 Welcome to EMBT!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
-    {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-            [Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]
-        ])
-    }
-);
+            `👋 Welcome to EMBT!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
+            { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]]) }
+        );
 
-await User.updateOne(
-    { user_id: userId },
- { $set: { welcome_message_id: sentMsg.message_id  }}
-);
+        await User.updateOne(
+            { user_id: userId },
+            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, sentMsg.message_id] } } }
+        );
+
     } catch (error) {
-    console.error("START ERROR:");
-    console.error(error);
-    console.error(error.stack);
-
-    return ctx.reply(
-        `⚠️ Error initializing your dashboard.\n\n${error.message}`
-    );
-  }
+        console.error("START ERROR:", error);
+        return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
+    }
 });
 
-bot.hears('👥 Affiliate', async (ctx) => {
+
+/*bot.hears('👥 Affiliate', async (ctx) => {
     try {
         const user = await User.findOne({ user_id: ctx.from.id });
         const botUsername = ctx.botInfo.username;
@@ -431,7 +391,7 @@ bot.hears('👥 Affiliate', async (ctx) => {
     } catch (e) {
         ctx.reply("⚠️ Error loading affiliate data. Try /start");
     }
-});
+}); 
 
 bot.hears('💸 Earn More', (ctx) => {
     ctx.replyWithMarkdown("📂 *Select a Task Category:*\n\nComplete tasks below to increase your balance.", Markup.inlineKeyboard([
@@ -860,7 +820,7 @@ bot.command('delete', async (ctx) => {
     const taskId = ctx.message.text.split(' ')[1];
     const result = await Task.deleteOne({ id: taskId });
     ctx.reply(result.deletedCount > 0 ? "✅ Entity purged." : "❌ ID context unresolvable.");
-});
+}); */
 
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
@@ -913,16 +873,15 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
 
         if (user) {
             // Optional: Handle cleanup of welcome message if tracked
-            if (user.welcome_message_id) {
-                try {
-                    await bot.telegram.deleteMessage(userId, user.welcome_message_id);
-                    await User.updateOne(
-                        { user_id: userId },
-                        { $unset: { welcome_message_id: "" } }
-                    );
-                } catch (err) {
-                    console.log(`Failed to delete welcome message for ${userId}:`, err.message);
+            if (user.pending_message_cleanup && user.pending_message_cleanup.length > 0) {
+                for (const msgId of user.pending_message_cleanup) {
+                    try {
+                        await bot.telegram.deleteMessage(userId, msgId);
+                    } catch (err) {
+                        console.log(`Failed to delete message ${msgId} for ${userId}:`, err.message);
+                    }
                 }
+                await User.updateOne({ user_id: userId }, { $set: { pending_message_cleanup: [] } });
             }
 
             // 3. Build a fully mapped data profile configuration matrix block
@@ -1551,17 +1510,10 @@ app.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
         for (const adminId of admins) {
             try {
                 await bot.telegram.sendMessage(adminId,
-                    `📋 *Manual Proof Submitted*\n👤 User: \`${userId}\`\n📝 Task: ${task.title}\n💰 Reward: ${task.reward} USDT\n\n🔗 Proof:\n${proof}`,
-                    {
-                        parse_mode: 'Markdown',
-                        ...Markup.inlineKeyboard([
-                            [
-                                Markup.button.callback('✅ Approve', `admin_app_${taskId}_${userId}`),
-                                Markup.button.callback('❌ Reject', `admin_rej_${taskId}_${userId}`)
-                            ]
-                        ])
-                    }
+                    `📋 *Manual Proof Submitted*\n👤 User: \`${userId}\`\n📝 Task: ${task.title}\n💰 Reward: ${task.reward} USDT\n\n🔗 Proof:\n${proof}\n\n⚠️ Review and approve from the admin panel.`,
+                    { parse_mode: 'Markdown' }
                 );
+                
             } catch (e) {
                 console.error("Failed to notify admin:", e.message);
             }
