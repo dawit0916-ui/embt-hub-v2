@@ -864,6 +864,30 @@ bot.command('delete', async (ctx) => {
 
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
+// ==========================================================================
+// NEW ENDPOINT: Admin Status Check
+// ==========================================================================
+app.get('/api/admin/check', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser?.id;
+        if (!userId) {
+            return res.status(401).json({ isAdmin: false, error: "Unauthorized" });
+        }
+
+        const isAdmin = admins.includes(userId);
+        
+        res.json({
+            success: true,
+            isAdmin: isAdmin,
+            userId: userId,
+            adminList: isAdmin ? admins : [] // Only show admin list to admins
+        });
+
+    } catch (err) {
+        console.error("Admin check error:", err);
+        res.status(500).json({ success: false, error: "Admin check failed" });
+    }
+});
 app.get('/api/admin/stats', validateAdmin, async (req, res) => {
     try {
         const totalUsers = await User.countDocuments();
