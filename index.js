@@ -37,6 +37,7 @@ const User = mongoose.model('User', new mongoose.Schema({
     referral_paid: { type: Boolean, default: false },
     penalized_tasks: [String],
     is_banned: { type: Boolean, default: false },
+    last_admin_active: { type: Date, default: null },
     referred_by: { type: Number, default: null } 
 }));
 
@@ -118,6 +119,24 @@ const WalletTransactionSchema = new mongoose.Schema({
 });
 
 const WalletTransaction = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', WalletTransactionSchema);
+const AdminActivity = mongoose.model('AdminActivity', new mongoose.Schema({
+    admin_id: Number,
+    admin_name: String,
+    action: String,
+    description: String,
+    timestamp: { type: Date, default: Date.now }
+}));
+
+async function logAdminAction(adminUser, action, description) {
+    try {
+        await AdminActivity.create({
+            admin_id: adminUser.id,
+            admin_name: adminUser.first_name || adminUser.username || 'Admin',
+            action,
+            description
+        });
+    } catch (e) { console.error('Failed to log admin action:', e); }
+}
 // --- SETTINGS FETCHER ---
 async function getSettings() {
     try {
@@ -202,6 +221,7 @@ const validateAdmin = async (req, res, next) => {
     }
 
     req.adminUser = user;
+    User.updateOne({ user_id: user.id }, { $set: { last_admin_active: new Date() } }).catch(() => {});
     next();
 };
     // ==========================================================================
@@ -851,8 +871,8 @@ app.get('/api/admin/check', validateInitData, async (req, res) => {
 app.get('/api/admin/stats', validateAdmin, async (req, res) => {
     try {
         const totalUsers = await User.countDocuments();
-        const pendingWithdrawals = await Withdraw.countDocuments({ status: 'pending' });
-        const totalPaid = await Withdraw.aggregate([{ $match: { status: 'approved' } }, { $group: { _id: null, total: { $sum: "$amount" } } }]);
+        const pendingWithdrawals = await WalletTransaction.countDocuments({ txType: 'WITHDRAWAL', status: 'pending' });
+        const totalPaid = await WalletTransaction.aggregate([{ $match: { txType: 'WITHDRAWAL', status: 'accepted' } }, { $group: { _id: null, total: { $sum: "$amount" } } }]);
         const settings = await getSettings();
         res.json({ users: totalUsers, pending: pendingWithdrawals, paid: totalPaid[0]?.total || 0, maintenance: settings.maintenance_mode });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1946,6 +1966,30 @@ app.get('/api/secure/history', validateInitData, async (req, res) => {
     } catch (err) {
         console.error("History fetch error:", err);
         return res.status(500).json({ error: "Failed to load history." });
+    }
+});
+app.get('/api/admin/registry', validateAdmin, async (req, res) => {
+    try {
+        const adminUsers = await User.find({ user_id: { $in: admins } })
+            .select('user_id username first_name last_admin_active');
+
+        const registryList = admins.map(id => {
+            const match = adminUsers.find(u => u.user_id === id);
+            return {
+                user_id: id,
+                username: match?.username || null,
+                first_name: match?.first_name || null,
+                last_active: match?.last_admin_active || null
+            };
+        });
+
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const activity = await AdminActivity.find({ timestamp: { $gte: since } }).sort({ timestamp: -1 }).limit(100);
+
+        res.json({ admins: registryList, activity });
+    } catch (e) {
+        console.error('Registry fetch failed:', e);
+        res.status(500).json({ error: 'Failed to load registry' });
     }
 });
 
