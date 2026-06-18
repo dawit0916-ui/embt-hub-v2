@@ -1043,10 +1043,65 @@ app.post('/api/admin/reply-ticket', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-app.get('/api/admin/tickets', validateAdmin, async (req, res) => res.json(await Ticket.find({ status: { $ne: 'resolved' } })));
+app.post('/api/admin/tickets/resolve', validateAdmin, async (req, res) => {
+    try {
+        const { ticketId } = req.body;
+        const ticket = await Ticket.findByIdAndUpdate(
+            ticketId,
+            { status: 'resolved' },
+            { new: false }
+        );
 
+        if (!ticket) return res.status(404).json({ error: 'Ticket not found.' });
 
+        try {
+            await bot.telegram.sendMessage(ticket.user_id,
+                `🎫 *Support Ticket Resolved*\n\nYour ticket \`${ticket.ticket_id || ticket._id}\` has been marked as resolved.\n\nIf you need further help, feel free to submit a new ticket.`,
+                { parse_mode: 'Markdown' }
+            );
+        } catch (e) {}
 
+        if (ticket.channel_message_id && STORAGE_CHANNEL_ID) {
+            const adminName = req.adminUser.first_name || req.adminUser.username || 'Admin';
+            await replyInChannel(ticket.channel_message_id,
+                `✅ *RESOLVED* by ${adminName}\n🕐 ${new Date().toLocaleString()}`
+            );
+        }
+
+        await logAdminAction(req.adminUser, 'ticket_resolved', `Resolved ticket ${ticket.ticket_id || ticket._id} for user ${ticket.user_id}`);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+app.get('/api/admin/tickets', validateAdmin, async (req, res) => {
+    try {
+        const filter = req.query.filter || 'open';
+        
+        let query = {};
+        if (filter === 'open') query.status = 'open';
+        else if (filter === 'replied') query.status = 'replied';
+        else if (filter === 'resolved') query.status = 'resolved';
+        // 'all' returns everything
+
+        const tickets = await Ticket.find(query).sort({ created_at: -1 }).lean();
+
+        // Count all statuses for badges
+        const [openCount, repliedCount, resolvedCount] = await Promise.all([
+            Ticket.countDocuments({ status: 'open' }),
+            Ticket.countDocuments({ status: 'replied' }),
+            Ticket.countDocuments({ status: 'resolved' })
+        ]);
+
+        res.json({ 
+            success: true, 
+            tickets,
+            counts: { open: openCount, replied: repliedCount, resolved: resolvedCount }
+        });
+    } catch (e) { 
+        res.status(500).json({ error: e.message }); 
+    }
+});
 app.post('/api/withdraw/request', validateInitData, async (req, res) => {
     const { user_id, amount, address, method } = req.body;
     const user = await User.findOne({ user_id });
