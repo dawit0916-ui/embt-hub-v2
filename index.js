@@ -506,7 +506,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
 app.post('/api/admin/settings', validateAdmin, async (req, res) => {
     try {
         await Settings.updateOne({}, { $set: req.body });
-        await logAdminAction(req.adminUser, 'settings_updated', \Updated: ${Object.keys(req.body).join(', ')}`);`
+        await logAdminAction(req.adminUser, 'settings_updated', `Updated: ${Object.keys(req.body).join(', ')}`);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -526,7 +526,7 @@ app.post('/api/admin/tasks/add', validateAdmin, async (req, res) => {
         });
 
         await newTask.save();
-        await logAdminAction(req.adminUser, 'task_added', \Added task: ${newTask.title}`);`
+        await logAdminAction(req.adminUser, 'task_added', `Added task: ${newTask.title}`);
         return res.json({ 
             success: true, 
             message: "Task successfully saved to database.",
@@ -632,7 +632,7 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
 
         payout.status = status;
         await payout.save();
-        await logAdminAction(req.adminUser, status === 'accepted' ? 'payout_approved' : 'payout_rejected', \${status} ${payout.amount} ${payout.assetType.toUpperCase()} for user ${payout.userId}`);`
+        await logAdminAction(req.adminUser, status === 'accepted' ? 'payout_approved' : 'payout_rejected', `${status} ${payout.amount} ${payout.assetType.toUpperCase()} for user ${payout.userId}`);
         // Only refund if you deducted balance during withdrawal creation
         if (status === 'rejected') {
             await User.updateOne(
@@ -1107,7 +1107,7 @@ app.post('/api/admin/users/ban', validateAdmin, async (req, res) => {
         );
 
         if (!updatedUser) return res.status(404).json({ error: "User not found." });
-        await logAdminAction(req.adminUser, banned ? 'user_banned' : 'user_unbanned', \User ${userId}`);`
+        await logAdminAction(req.adminUser, banned ? 'user_banned' : 'user_unbanned', `User ${userId}`);
         // Notify user via bot
         try {
             const msg = banned
@@ -1133,7 +1133,7 @@ app.delete('/api/admin/tasks/delete/:id', validateAdmin, async (req, res) => {
         if (result.deletedCount === 0) {
             return res.status(404).json({ error: "Task not found." });
         }
-        await logAdminAction(req.adminUser, 'task_deleted', \Deleted task: ${taskId}`);`
+        await logAdminAction(req.adminUser, 'task_deleted', `Deleted task: ${taskId}`);
         return res.json({ success: true });
 
     } catch (err) {
@@ -1145,7 +1145,7 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Blank body payload allocation" });
     const users = await User.find({}, 'user_id');
-    await logAdminAction(req.adminUser, 'broadcast_sent', \Sent to ${users.length} users`);`
+    await logAdminAction(req.adminUser, 'broadcast_sent', `Sent to ${users.length} users`);
     res.json({ success: true, total: users.length });
 
     (async () => {
