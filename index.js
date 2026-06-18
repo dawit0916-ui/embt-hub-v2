@@ -58,7 +58,9 @@ const Ticket = mongoose.model('Ticket', new mongoose.Schema({
     message: String,
     admin_reply: String,
     status: { type: String, default: 'open' }, 
-    created_at: { type: Date, default: Date.now }
+    created_at: { type: Date, default: Date.now },
+    ticket_id: { type: String, default: () => 'TKT-' + crypto.randomBytes(4).toString('hex').toUpperCase() },
+    channel_message_id: { type: Number, default: null }
 }));
 
 const Task = mongoose.model('Task', new mongoose.Schema({
@@ -115,10 +117,27 @@ const WalletTransactionSchema = new mongoose.Schema({
     network: { type: String, default: "INTERNAL_LEDGER_RAILS" },
     cryptoAddress: { type: String, default: "LOCAL_VAULT_NODE" },
     memo: { type: String, default: "" },
-    timestamp: { type: Date, default: Date.now }
+    timestamp: { type: Date, default: Date.now },
+    channelMessageId: { type: Number, default: null }
 });
 
 const WalletTransaction = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', WalletTransactionSchema);
+
+const ProofSubmission = mongoose.model('ProofSubmission', new mongoose.Schema({
+    proofId: { type: String, unique: true, default: () => 'PRF-' + crypto.randomBytes(4).toString('hex').toUpperCase() },
+    userId: { type: Number, required: true, index: true },
+    username: { type: String, default: null },
+    taskId: { type: String, required: true },
+    taskTitle: { type: String, default: '' },
+    reward: { type: Number, default: 0 },
+    proofType: { type: String, enum: ['text', 'screenshot'], default: 'text' },
+    proofText: { type: String, default: null },
+    telegramFileId: { type: String, default: null },
+    channelMessageId: { type: Number, default: null },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending', index: true },
+    submittedAt: { type: Date, default: Date.now },
+    reviewedAt: { type: Date, default: null }
+}));
 const AdminActivity = mongoose.model('AdminActivity', new mongoose.Schema({
     admin_id: Number,
     admin_name: String,
@@ -137,6 +156,53 @@ async function logAdminAction(adminUser, action, description) {
         });
     } catch (e) { console.error('Failed to log admin action:', e); }
 }
+const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
+
+async function postToChannel(text, extra = {}) {
+    try {
+        if (!STORAGE_CHANNEL_ID) return null;
+        const msg = await bot.telegram.sendMessage(STORAGE_CHANNEL_ID, text, {
+            parse_mode: 'Markdown',
+            ...extra
+        });
+        return msg.message_id;
+    } catch (e) {
+        console.error('[Channel Log Failed]:', e.message);
+        return null;
+    }
+}
+
+async function postPhotoToChannel(buffer, caption) {
+    try {
+        if (!STORAGE_CHANNEL_ID) return { messageId: null, fileId: null };
+        const msg = await bot.telegram.sendPhoto(
+            STORAGE_CHANNEL_ID,
+            { source: buffer },
+            { caption, parse_mode: 'Markdown' }
+        );
+        return {
+            messageId: msg.message_id,
+            fileId: msg.photo[msg.photo.length - 1].file_id
+        };
+    } catch (e) {
+        console.error('[Channel Photo Failed]:', e.message);
+        return { messageId: null, fileId: null };
+    }
+}
+
+async function replyInChannel(replyToMessageId, text) {
+    try {
+        if (!STORAGE_CHANNEL_ID || !replyToMessageId) return null;
+        const msg = await bot.telegram.sendMessage(STORAGE_CHANNEL_ID, text, {
+            parse_mode: 'Markdown',
+            reply_to_message_id: replyToMessageId
+        });
+        return msg.message_id;
+    } catch (e) {
+        console.error('[Channel Reply Failed]:', e.message);
+        return null;
+    }
+             }
 // --- SETTINGS FETCHER ---
 async function getSettings() {
     try {
@@ -573,13 +639,135 @@ app.get('/api/admin/directory', validateAdmin, async (req, res) => {
         return res.status(500).json({ success: false, error: 'Database service query failure mapping user collections.' });
     }
 });
-app.get('/api/admin/pending-proofs', validateAdmin, async (req, res) => {
+
+app.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
     try {
-        // Proofs are tasks with type 'manual' submitted by users
-        // You need a ProofSubmission model or use existing data
-        // For now return empty array to prevent frontend crash
-        res.json([]);
-    } catch(e) {
+        const { taskId, proof, screenshot } = req.body;
+        const userId = req.tgUser.id;
+
+        const task = await Task.findOne({ id: taskId, enabled: true });
+        if (!task) return res.status(404).json({ error: "Task not found." });
+
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ error: "User not found." });
+        if (user.completed_tasks.includes(taskId)) {
+            return res.status(400).json({ error: "Task already submitted." });
+        }
+
+        const proofId = 'PRF-' + crypto.randomBytes(4).toString('hex').toUpperCase();
+        const proofType = screenshot ? 'screenshot' : 'text';
+        let telegramFileId = null;
+        let channelMessageId = null;
+
+        const captionHeader = 
+            `📋 *PROOF SUBMISSION*\n` +
+            `🆔 REF: \`${proofId}\`\n` +
+            `👤 User: \`${userId}\`${user.username ? ' @' + user.username : ''}\n` +
+            `📝 Task: ${task.title}\n` +
+            `💰 Reward: ${task.reward} USDT\n` +
+            `📅 ${new Date().toLocaleString()}`;
+
+        if (screenshot) {
+            const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
+            const buffer = Buffer.from(base64Data, 'base64');
+            const result = await postPhotoToChannel(buffer, captionHeader);
+            telegramFileId = result.fileId;
+            channelMessageId = result.messageId;
+        } else {
+            const fullMsg = `${captionHeader}\n\n📄 *Proof:*\n\`\`\`${proof || 'No text'}\`\`\``;
+            channelMessageId = await postToChannel(fullMsg);
+        }
+
+        await ProofSubmission.create({
+            proofId,
+            userId,
+            username: user.username || null,
+            taskId,
+            taskTitle: task.title,
+            reward: task.reward,
+            proofType,
+            proofText: proof || null,
+            telegramFileId,
+            channelMessageId
+        });
+
+        return res.json({ success: true, proofId });
+
+    } catch (err) {
+        console.error("Submit proof error:", err);
+        return res.status(500).json({ error: "Failed to submit proof." });
+    }
+});
+// Get pending proofs
+app.get('/api/admin/proofs/pending', validateAdmin, async (req, res) => {
+    try {
+        const proofs = await ProofSubmission.find({ status: 'pending' })
+            .sort({ submittedAt: -1 }).lean();
+        res.json({ success: true, proofs });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Get screenshot URL for a proof
+app.get('/api/admin/proof-image/:proofId', validateAdmin, async (req, res) => {
+    try {
+        const proof = await ProofSubmission.findOne({ proofId: req.params.proofId });
+        if (!proof?.telegramFileId) return res.status(404).json({ error: 'No screenshot.' });
+        const file = await bot.telegram.getFile(proof.telegramFileId);
+        res.json({ url: `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Approve or reject a proof
+app.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
+    try {
+        const { proofId, action } = req.body;
+        if (!['approve', 'reject'].includes(action)) {
+            return res.status(400).json({ error: 'Invalid action.' });
+        }
+
+        const proof = await ProofSubmission.findOne({ proofId, status: 'pending' });
+        if (!proof) return res.status(404).json({ error: 'Proof not found or already reviewed.' });
+
+        if (action === 'approve') {
+            await User.updateOne({ user_id: proof.userId }, {
+                $inc: { balance: proof.reward, total_earned: proof.reward },
+                $push: {
+                    completed_tasks: proof.taskId,
+                    history: { title: proof.taskTitle, reward: proof.reward, taskId: proof.taskId, date: new Date() }
+                }
+            });
+            try {
+                await bot.telegram.sendMessage(proof.userId,
+                    `✅ *Proof Approved!*\n\n📋 Task: ${proof.taskTitle}\n💰 +${proof.reward} USDT added\n🆔 REF: \`${proof.proofId}\``,
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (e) {}
+        } else {
+            try {
+                await bot.telegram.sendMessage(proof.userId,
+                    `❌ *Proof Rejected*\n\n📋 Task: ${proof.taskTitle}\n🆔 REF: \`${proof.proofId}\`\n\nPlease resubmit with a clearer screenshot.`,
+                    { parse_mode: 'Markdown' }
+                );
+            } catch (e) {}
+        }
+
+        if (proof.channelMessageId) {
+            const adminName = req.adminUser.first_name || req.adminUser.username || 'Admin';
+            await replyInChannel(proof.channelMessageId,
+                `${action === 'approve' ? '✅ APPROVED' : '❌ REJECTED'} by ${adminName}\n🕐 ${new Date().toLocaleString()}`
+            );
+        }
+
+        await ProofSubmission.updateOne({ proofId }, { $set: { status: action === 'approve' ? 'approved' : 'rejected', reviewedAt: new Date() } });
+        await logAdminAction(req.adminUser, action === 'approve' ? 'proof_approved' : 'proof_rejected', `Proof ${proofId} for user ${proof.userId}`);
+
+        res.json({ success: true });
+    } catch (e) {
+        console.error('Proof action error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -632,6 +820,12 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
 
         payout.status = status;
         await payout.save();
+        if (payout.channelMessageId) {
+    const adminName = req.adminUser.first_name || req.adminUser.username || 'Admin';
+    await replyInChannel(payout.channelMessageId,
+        `${status === 'accepted' ? '✅ APPROVED' : '❌ REJECTED'} by ${adminName}\n💰 ${payout.amount} USDT\n🕐 ${new Date().toLocaleString()}`
+    );
+        }
         await logAdminAction(req.adminUser, status === 'accepted' ? 'payout_approved' : 'payout_rejected', `${status} ${payout.amount} ${payout.assetType.toUpperCase()} for user ${payout.userId}`);
         // Only refund if you deducted balance during withdrawal creation
         if (status === 'rejected') {
@@ -792,16 +986,65 @@ app.post('/api/admin/user/update', validateAdmin, async (req, res) => {
 app.get('/api/settings', async (req, res) => res.json(await getSettings()));
 app.post('/api/settings/update', validateAdmin, async (req, res) => { await Settings.updateOne({}, req.body); res.json({ success: true }); });
 
-app.post('/api/support/create', async (req, res) => {
-    await Ticket.create(req.body);
-    res.json({ success: true });
+app.post('/api/support/create', validateInitData, async (req, res) => {
+    try {
+        const { message } = req.body;
+        const userId = req.tgUser?.id;
+        const user = await User.findOne({ user_id: userId });
+
+        const ticket = await Ticket.create({
+            user_id: userId,
+            username: user?.username || null,
+            message
+        });
+
+        const msg =
+            `🎧 *SUPPORT TICKET*\n` +
+            `🆔 REF: \`${ticket.ticket_id}\`\n` +
+            `👤 User: \`${userId}\`${user?.username ? ' @' + user.username : ''}\n` +
+            `📅 ${new Date().toLocaleString()}\n\n` +
+            `💬 *Message:*\n${message}`;
+
+        const channelMsgId = await postToChannel(msg);
+        if (channelMsgId) {
+            await Ticket.updateOne({ _id: ticket._id }, { $set: { channel_message_id: channelMsgId } });
+        }
+
+        res.json({ success: true, ticketId: ticket.ticket_id });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+app.post('/api/admin/reply-ticket', validateAdmin, async (req, res) => {
+    try {
+        const ticket = await Ticket.findByIdAndUpdate(
+            req.body.ticketId,
+            { admin_reply: req.body.reply, status: 'replied' },
+            { new: false } // get original to read channel_message_id
+        );
+
+        try {
+            await bot.telegram.sendMessage(ticket.user_id,
+                `📩 *Support Reply*\n\n${req.body.reply}`,
+                { parse_mode: 'Markdown' }
+            );
+        } catch (e) {}
+
+        if (ticket.channel_message_id) {
+            const adminName = req.adminUser.first_name || req.adminUser.username || 'Admin';
+            await replyInChannel(ticket.channel_message_id,
+                `📩 *ADMIN REPLY* by ${adminName}\n\n${req.body.reply}\n\n🕐 ${new Date().toLocaleString()}`
+            );
+        }
+
+        await logAdminAction(req.adminUser, 'ticket_replied', `Replied to ticket ${ticket.ticket_id || ticket._id}`);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 app.get('/api/admin/tickets', validateAdmin, async (req, res) => res.json(await Ticket.find({ status: { $ne: 'resolved' } })));
-app.post('/api/admin/reply-ticket', validateAdmin, async (req, res) => {
-    const ticket = await Ticket.findByIdAndUpdate(req.body.ticketId, { admin_reply: req.body.reply, status: 'replied' });
-    bot.telegram.sendMessage(ticket.user_id, `📩 *Support Message Update:*\n\n${req.body.reply}`, { parse_mode: 'Markdown' });
-    res.json({ success: true });
-});
+
 
 
 app.post('/api/withdraw/request', validateInitData, async (req, res) => {
@@ -1058,41 +1301,7 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         return res.status(500).json({ error: "Internal server error." });
     }
 });
-// 1. Manual proof submission
-app.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
-    try {
-        const { taskId, proof } = req.body;
-        const userId = req.tgUser.id;
-
-        const task = await Task.findOne({ id: taskId, enabled: true });
-        if (!task) return res.status(404).json({ error: "Task not found." });
-
-        const user = await User.findOne({ user_id: userId });
-        if (!user) return res.status(404).json({ error: "User not found." });
-        if (user.completed_tasks.includes(taskId)) {
-            return res.status(400).json({ error: "Task already submitted." });
-        }
-
-        // Notify all admins with the proof
-        for (const adminId of admins) {
-            try {
-                await bot.telegram.sendMessage(adminId,
-                    `📋 *Manual Proof Submitted*\n👤 User: \`${userId}\`\n📝 Task: ${task.title}\n💰 Reward: ${task.reward} USDT\n\n🔗 Proof:\n${proof}\n\n⚠️ Review and approve from the admin panel.`,
-                    { parse_mode: 'Markdown' }
-                );
-                
-            } catch (e) {
-                console.error("Failed to notify admin:", e.message);
-            }
-        }
-
-        return res.json({ success: true });
-
-    } catch (err) {
-        console.error("Submit proof error:", err);
-        return res.status(500).json({ error: "Failed to submit proof." });
-    }
-});
+// 
 
 // 2. Ban/unban user
 app.post('/api/admin/users/ban', validateAdmin, async (req, res) => {
@@ -1460,7 +1669,20 @@ You will receive another notification when it is approved or rejected.
         userNotificationError
     );
             }
-
+// Log withdrawal to channel
+const wdMsg =
+    `💸 *WITHDRAWAL REQUEST*\n` +
+    `🆔 TX: \`${withdrawalTransaction.txId}\`\n` +
+    `👤 User: \`${telegramUserId}\` @${userProfileRecordNode.username || 'N/A'}\n` +
+    `💰 Amount: ${payoutAmount} USDT\n` +
+    `🌐 Network: ${network}\n` +
+    `📬 Address: \`${cryptoAddress}\`\n` +
+    `👥 Referrals: ${databaseVerifiedInvitesCount}\n` +
+    `📅 ${new Date().toLocaleString()}`;
+const wdChannelMsgId = await postToChannel(wdMsg);
+if (wdChannelMsgId) {
+    await WalletTransaction.updateOne({ _id: withdrawalTransaction._id }, { $set: { channelMessageId: wdChannelMsgId } });
+}
         return res.status(200).json({ success: true, message: "Milestone extraction tracking payout successfully registered into clearance queues." });
 
     } catch (catastrophicCrashInternalEngineTrace) {
