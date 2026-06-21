@@ -146,6 +146,38 @@ const AdminActivity = mongoose.model('AdminActivity', new mongoose.Schema({
     timestamp: { type: Date, default: Date.now }
 }));
 
+// --- ADD AFTER YOUR EXISTING MODELS ---
+
+const AdWatch = mongoose.model('AdWatch', new mongoose.Schema({
+    userId: { type: Number, required: true, index: true },
+    adId: { type: String, required: true },
+    adNetwork: { type: String, enum: ['adgrams', 'google_ads'], required: true },
+    reward: { type: Number, required: true },
+    watched: { type: Boolean, default: false },
+    viewedAt: { type: Date, default: Date.now },
+    claimedAt: { type: Date, default: null }
+}));
+
+const DailyTaskProgress = mongoose.model('DailyTaskProgress', new mongoose.Schema({
+    userId: { type: Number, required: true, index: true },
+    taskId: { type: String, required: true },
+    completedCount: { type: Number, default: 0 },
+    claimedToday: { type: Boolean, default: false },
+    resetAt: { type: Date, required: true }, // When this daily task resets (next UTC midnight)
+    lastCompletedAt: { type: Date, default: null }
+}));
+
+// Track which ad units we're currently offering
+const ActiveAd = mongoose.model('ActiveAd', new mongoose.Schema({
+    adId: { type: String, unique: true, required: true },
+    network: { type: String, enum: ['adgrams', 'google_ads'] },
+    unitId: { type: String, required: true }, // AdMob Unit ID or AdGrams ID
+    reward: { type: Number, required: true },
+    maxWatchesPerDay: { type: Number, default: 2 },
+    enabled: { type: Boolean, default: true },
+    createdAt: { type: Date, default: Date.now }
+}));
+
 async function logAdminAction(adminUser, action, description) {
     try {
         await AdminActivity.create({
@@ -1818,6 +1850,268 @@ app.get('/api/admin/registry', validateAdmin, async (req, res) => {
     }
 });
 
+// ==========================================================================
+// WATCH & EARN SYSTEM ENDPOINTS
+// ==========================================================================
+
+// Get available ads for user (max 2 per day)
+app.get('/api/secure/available-ads', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Get all enabled ads
+        const allAds = await ActiveAd.find({ enabled: true });
+
+        const adsWithStatus = await Promise.all(
+            allAds.map(async (ad) => {
+                const watched = await AdWatch.findOne({
+                    userId,
+                    adId: ad.adId,
+                    viewedAt: { $gte: today }
+                });
+
+                return {
+                    id: ad.adId,
+                    network: ad.network,
+                    unitId: ad.unitId,
+                    reward: ad.reward,
+                    watched: !!watched,
+                    claimed: watched?.claimedAt ? true : false
+                };
+            })
+        );
+
+        return res.json({ success: true, ads: adsWithStatus });
+    } catch (err) {
+        console.error('Get ads error:', err);
+        res.status(500).json({ error: 'Failed to load ads' });
+    }
+});
+
+// Record that user watched an ad (call this AFTER ad completes)
+app.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { adId } = req.body;
+
+        if (!adId) return res.status(400).json({ error: 'Ad ID required' });
+
+        const ad = await ActiveAd.findOne({ adId, enabled: true });
+        if (!ad) return res.status(404).json({ error: 'Ad not found' });
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Check if already watched today
+        const existing = await AdWatch.findOne({
+            userId,
+            adId,
+            viewedAt: { $gte: today }
+        });
+
+        if (existing) {
+            return res.status(400).json({ error: 'Ad already watched today' });
+        }
+
+        // Create watch record
+        await AdWatch.create({
+            userId,
+            adId,
+            adNetwork: ad.network,
+            reward: ad.reward,
+            watched: true
+        });
+
+        return res.json({ success: true, reward: ad.reward });
+    } catch (err) {
+        console.error('Watch ad error:', err);
+        res.status(500).json({ error: 'Failed to record watch' });
+    }
+});
+
+// Claim ad reward (after watching confirmation)
+app.post('/api/secure/claim-ad-reward', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { adId } = req.body;
+
+        const watch = await AdWatch.findOne({ 
+            userId, 
+            adId, 
+            watched: true,
+            claimedAt: null 
+        });
+
+        if (!watch) {
+            return res.status(400).json({ error: 'Ad watch not found or already claimed' });
+        }
+
+        // Update user balance
+        const reward = watch.reward;
+        await User.updateOne(
+            { user_id: userId },
+            {
+                $inc: { balance: reward, total_earned: reward },
+                $push: {
+                    history: {
+                        title: `Ad Watch - ${watch.adNetwork}`,
+                        reward,
+                        taskId: `ad_${adId}`,
+                        date: new Date()
+                    }
+                }
+            }
+        );
+
+        // Mark as claimed
+        watch.claimedAt = new Date();
+        await watch.save();
+
+        return res.json({ success: true, newBalance: (await User.findOne({ user_id: userId })).balance });
+    } catch (err) {
+        console.error('Claim ad error:', err);
+        res.status(500).json({ error: 'Failed to claim reward' });
+    }
+});
+
+// ==========================================================================
+// DAILY RESET TASKS ENDPOINTS
+// ==========================================================================
+
+function getNextResetTime(taskType) {
+    const now = new Date();
+    
+    if (taskType === 'daily') {
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(0, 0, 0, 0);
+        return tomorrow;
+    }
+    return now;
+}
+
+// Get all tasks with daily progress
+app.get('/api/secure/tasks-with-progress', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        
+        const allTasks = await Task.find({ enabled: true });
+        
+        const tasksWithProgress = await Promise.all(
+            allTasks.map(async (task) => {
+                if (task.type !== 'daily') {
+                    // One-time tasks
+                    const user = await User.findOne({ user_id: userId });
+                    const completed = user?.completed_tasks?.includes(task.id);
+                    return {
+                        ...task.toObject(),
+                        completed: !!completed,
+                        progress: completed ? 1 : 0,
+                        requirementCount: 1
+                    };
+                }
+
+                // Daily tasks - check if reset needed
+                let progress = await DailyTaskProgress.findOne({ userId, taskId: task.id });
+                
+                if (!progress) {
+                    progress = await DailyTaskProgress.create({
+                        userId,
+                        taskId: task.id,
+                        resetAt: getNextResetTime('daily')
+                    });
+                }
+
+                const now = new Date();
+                if (now >= progress.resetAt) {
+                    // Reset this task
+                    progress.completedCount = 0;
+                    progress.claimedToday = false;
+                    progress.resetAt = getNextResetTime('daily');
+                    await progress.save();
+                }
+
+                return {
+                    ...task.toObject(),
+                    completed: progress.claimedToday,
+                    progress: Math.min(progress.completedCount, 1),
+                    requirementCount: 1,
+                    resetAt: progress.resetAt
+                };
+            })
+        );
+
+        return res.json({ success: true, tasks: tasksWithProgress });
+    } catch (err) {
+        console.error('Get tasks error:', err);
+        res.status(500).json({ error: 'Failed to load tasks' });
+    }
+});
+
+// Complete a daily task
+app.post('/api/secure/complete-daily-task', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { taskId } = req.body;
+
+        const task = await Task.findOne({ id: taskId, enabled: true });
+        if (!task) return res.status(404).json({ error: 'Task not found' });
+
+        let progress = await DailyTaskProgress.findOne({ userId, taskId });
+        if (!progress) {
+            progress = await DailyTaskProgress.create({
+                userId,
+                taskId,
+                resetAt: getNextResetTime('daily')
+            });
+        }
+
+        // Check if reset needed
+        if (new Date() >= progress.resetAt) {
+            progress.completedCount = 0;
+            progress.claimedToday = false;
+            progress.resetAt = getNextResetTime('daily');
+        }
+
+        if (progress.claimedToday) {
+            return res.status(400).json({ error: 'Already completed today' });
+        }
+
+        // Complete and claim reward
+        progress.completedCount = 1;
+        progress.claimedToday = true;
+        progress.lastCompletedAt = new Date();
+        await progress.save();
+
+        // Award user
+        await User.updateOne(
+            { user_id: userId },
+            {
+                $inc: { balance: task.reward, total_earned: task.reward },
+                $push: {
+                    history: {
+                        title: task.title,
+                        reward: task.reward,
+                        taskId,
+                        date: new Date()
+                    }
+                }
+            }
+        );
+
+        const updatedUser = await User.findOne({ user_id: userId });
+        return res.json({ 
+            success: true, 
+            reward: task.reward,
+            newBalance: updatedUser.balance
+        });
+    } catch (err) {
+        console.error('Complete daily task error:', err);
+        res.status(500).json({ error: 'Failed to complete task' });
+    }
+});
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
 setInterval(async () => {
     try {
