@@ -2112,6 +2112,42 @@ app.post('/api/secure/complete-daily-task', validateInitData, async (req, res) =
         res.status(500).json({ error: 'Failed to complete task' });
     }
 });
+// Place this with your other /api/admin/* routes
+app.post('/api/admin/create-test-ads', validateAdmin, async (req, res) => {
+    try {
+        await ActiveAd.deleteMany({}); // Clear existing
+        
+        const testAds = [
+            {
+                adId: 'ad_1_adgrams',
+                network: 'adgrams',
+                unitId: 'int-35918',
+                reward: 0.05,
+                maxWatchesPerDay: 2
+            },
+            {
+                adId: 'ad_2_adgrams',
+                network: 'adgrams',
+                unitId: 'int-35918',
+                reward: 0.10,
+                maxWatchesPerDay: 2
+            },
+            {
+                adId: 'ad_3_google',
+                network: 'google_ads',
+                unitId: 'ca-app-pub-xxxxxxxxxxxxxxxx/yyyyyyyyyy',
+                reward: 0.05,
+                maxWatchesPerDay: 2
+            }
+        ];
+
+        await ActiveAd.insertMany(testAds);
+        await logAdminAction(req.adminUser, 'ads_created', 'Created test ad units');
+        res.json({ success: true, created: testAds.length });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
 setInterval(async () => {
     try {
