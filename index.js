@@ -2112,38 +2112,50 @@ app.post('/api/secure/complete-daily-task', validateInitData, async (req, res) =
         res.status(500).json({ error: 'Failed to complete task' });
     }
 });
-// Place this with your other /api/admin/* routes
 app.post('/api/admin/create-test-ads', validateAdmin, async (req, res) => {
     try {
-        await ActiveAd.deleteMany({}); // Clear existing
+        console.log('🔵 [TEST-ADS] Starting...');
+        console.log('🔵 [TEST-ADS] Admin user:', req.adminUser?.id || req.user?.id);
+        
+        // Test MongoDB connection
+        const count = await ActiveAd.countDocuments({});
+        console.log('🔵 [TEST-ADS] Current ad count:', count);
+        
+        // Clear
+        const deleteResult = await ActiveAd.deleteMany({});
+        console.log('🔵 [TEST-ADS] Deleted:', deleteResult.deletedCount);
         
         const testAds = [
-            {
-                adId: 'ad_1_adgrams',
-                network: 'adgrams',
-                unitId: 'int-35918',
-                reward: 0.05,
-                maxWatchesPerDay: 2
-            },
-            {
-                adId: 'ad_2_adgrams',
-                network: 'adgrams',
-                unitId: 'int-35918',
-                reward: 0.10,
-                maxWatchesPerDay: 2
-            },
-            {
-                adId: 'ad_3_google',
-                network: 'google_ads',
-                unitId: 'ca-app-pub-xxxxxxxxxxxxxxxx/yyyyyyyyyy',
-                reward: 0.05,
-                maxWatchesPerDay: 2
-            }
+            { adId: 'ad_1_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.05, maxWatchesPerDay: 2 },
+            { adId: 'ad_2_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.10, maxWatchesPerDay: 2 },
+            { adId: 'ad_3_google', network: 'google_ads', unitId: 'test_3', reward: 0.05, maxWatchesPerDay: 2 }
         ];
-
-        await ActiveAd.insertMany(testAds);
-        await logAdminAction(req.adminUser, 'ads_created', 'Created test ad units');
-        res.json({ success: true, created: testAds.length });
+        
+        const result = await ActiveAd.insertMany(testAds);
+        console.log('🔵 [TEST-ADS] Inserted:', result.length);
+        
+        // Log action
+        if (logAdminAction) {
+            await logAdminAction(req.adminUser, 'ads_created', 'Created test ad units');
+        }
+        
+        res.json({ success: true, created: result.length });
+    } catch (e) {
+        console.error('❌ [TEST-ADS] ERROR:', e.message);
+        console.error('❌ [TEST-ADS] Stack:', e.stack);
+        console.error('❌ [TEST-ADS] Full error:', JSON.stringify(e, Object.getOwnPropertyNames(e)));
+        
+        res.status(500).json({ 
+            error: e.message || 'Unknown error',
+            type: e.name,
+            details: e.toString()
+        });
+    }
+});
+app.get('/api/admin/test', validateAdmin, async (req, res) => {
+    try {
+        const count = await ActiveAd.countDocuments({});
+        res.json({ success: true, adCount: count, user: req.adminUser?.id });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
