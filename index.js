@@ -1778,53 +1778,8 @@ if (wdChannelMsgId) {
     }
 });
 
-// API ROUTE C: Asynchronous statement lazy-loader historical ledger logs query parsing engine
-app.get('/api/secure/wallet/history', validateInitData, async (req, res) => {
-    try {
-        const telegramUserId = req.tgUser.id;
-        const targetSearchStatusFilter = req.query.status || 'pending';
 
-        // Query optimizations limits records tracking pipelines indices sorting configurations
-        const verifiedHistoricalLedgerMatchesList = await WalletTransaction.find({
-            userId: telegramUserId,
-            status: String(targetSearchStatusFilter)
-        })
-        .sort({ timestamp: -1 })
-        .limit(40)
-        .lean();
 
-        return res.status(200).json({ success: true, history: verifiedHistoricalLedgerMatchesList });
-
-    } catch (catastrophicCrashInternalEngineTrace) {
-        console.error("Crash reading historical transaction records matching pipelines data:", catastrophicCrashInternalEngineTrace);
-        return res.status(500).json({ success: false, error: "Internal operational query trace runtime anomaly exception thrown on storage layers." });
-    }
-});
-app.get('/api/secure/history', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const user = await User.findOne({ user_id: userId });
-
-        if (!user) {
-            return res.status(404).json({ error: "User not found." });
-        }
-
-        // Return history array sorted newest first
-        const sortedHistory = (user.history || [])
-            .filter(item => item.title && item.reward)
-            .sort((a, b) => new Date(b.date) - new Date(a.date))
-            .slice(0, 50); // Limit to last 50 entries
-
-        return res.json({ 
-            success: true, 
-            history: sortedHistory 
-        });
-
-    } catch (err) {
-        console.error("History fetch error:", err);
-        return res.status(500).json({ error: "Failed to load history." });
-    }
-});
 app.get('/api/admin/registry', validateAdmin, async (req, res) => {
     try {
         const adminUsers = await User.find({ user_id: { $in: admins } })
@@ -2158,6 +2113,47 @@ app.get('/api/admin/test', validateAdmin, async (req, res) => {
         res.json({ success: true, adCount: count, user: req.adminUser?.id });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+app.get('/api/secure/leaderboard', validateInitData, async (req, res) => {
+    try {
+        const type = req.query.type === 'invites' ? 'invites' : 'points';
+        const sortField = type === 'invites' ? 'referralCount' : 'points';
+        const userId = req.tgUser.id;
+
+        const topUsers = await User.find({ is_banned: false })
+            .select(`user_id username first_name ${sortField}`)
+            .sort({ [sortField]: -1 })
+            .limit(50)
+            .lean();
+
+        const leaderboard = topUsers.map((u, idx) => ({
+            rank: idx + 1,
+            user_id: u.user_id,
+            name: u.first_name || u.username || `User ${u.user_id}`,
+            score: u[sortField] || 0,
+            isYou: u.user_id === userId
+        }));
+
+        let myEntry = leaderboard.find(e => e.isYou);
+        if (!myEntry) {
+            const myUser = await User.findOne({ user_id: userId }).select(sortField).lean();
+            const myScore = myUser ? (myUser[sortField] || 0) : 0;
+            const higherCount = await User.countDocuments({ is_banned: false, [sortField]: { $gt: myScore } });
+            myEntry = {
+                rank: higherCount + 1,
+                user_id: userId,
+                name: 'You',
+                score: myScore,
+                isYou: true,
+                outsideTop: true
+            };
+        }
+
+        return res.json({ success: true, type, leaderboard, myRank: myEntry });
+    } catch (err) {
+        console.error("Leaderboard fetch error:", err);
+        return res.status(500).json({ error: "Failed to load leaderboard." });
     }
 });
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
