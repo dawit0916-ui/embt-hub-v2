@@ -563,6 +563,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
                 is_banned: user.is_banned || false,
                 red_flag: user.red_flag || false,
                 tasks_added: user.tasks_added || 0,
+                createdAt: user.createdAt,
                 isAdmin: typeof admins !== 'undefined' ? admins.includes(userId) : false
             };
 
@@ -2154,6 +2155,70 @@ app.get('/api/secure/leaderboard', validateInitData, async (req, res) => {
     } catch (err) {
         console.error("Leaderboard fetch error:", err);
         return res.status(500).json({ error: "Failed to load leaderboard." });
+    }
+});
+app.post('/api/secure/wallet/withdraw-usdt', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { amount, cryptoAddress, network } = req.body;
+        const withdrawAmount = parseFloat(amount);
+
+        if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
+            return res.status(400).json({ success: false, error: "Invalid withdrawal amount." });
+        }
+        if (!cryptoAddress || cryptoAddress.length < 8) {
+            return res.status(400).json({ success: false, error: "Please enter a valid wallet address." });
+        }
+
+        const settings = await getSettings();
+        if (withdrawAmount < (settings.min_withdraw || 0.2)) {
+            return res.status(400).json({ success: false, error: `Minimum withdrawal is ${settings.min_withdraw} USDT.` });
+        }
+
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ success: false, error: "User not found." });
+        if (user.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
+        if ((user.balance || 0) < withdrawAmount) {
+            return res.status(400).json({ success: false, error: "Insufficient balance." });
+        }
+
+        await User.updateOne({ user_id: userId }, { $inc: { balance: -withdrawAmount } });
+
+        const withdrawalTransaction = await WalletTransaction.create({
+            userId,
+            txType: 'WITHDRAWAL',
+            assetType: 'usdt',
+            amount: withdrawAmount,
+            counterpartyId: "EXTERNAL_MAINNET_SETTLEMENT_RESERVE",
+            status: 'pending',
+            network: network || 'BEP20',
+            cryptoAddress,
+            memo: 'Standard balance withdrawal'
+        });
+
+        try {
+            await bot.telegram.sendMessage(ADMIN_ID,
+                `🚨 NEW WITHDRAWAL REQUEST\n\n🆔 TX: ${withdrawalTransaction.txId}\n👤 User: ${userId} @${user.username || 'N/A'}\n💰 Amount: ${withdrawAmount} USDT\n🌐 Network: ${network || 'BEP20'}\n📬 Address: ${cryptoAddress}`
+            );
+        } catch (e) { console.error("Admin notify error:", e.message); }
+
+        try {
+            await bot.telegram.sendMessage(userId,
+                `✅ Withdrawal Request Submitted\n\n🆔 TX: ${withdrawalTransaction.txId}\n💰 Amount: ${withdrawAmount} USDT\n\nYour request is in the review queue.`
+            );
+        } catch (e) {}
+
+        const logMsg = `💸 *WITHDRAWAL REQUEST*\n🆔 TX: \`${withdrawalTransaction.txId}\`\n👤 User: \`${userId}\` @${user.username || 'N/A'}\n💰 Amount: ${withdrawAmount} USDT\n🌐 Network: ${network || 'BEP20'}\n📬 Address: \`${cryptoAddress}\``;
+        const channelMsgId = await postToChannel(logMsg);
+        if (channelMsgId) {
+            await WalletTransaction.updateOne({ _id: withdrawalTransaction._id }, { $set: { channelMessageId: channelMsgId } });
+        }
+
+        return res.json({ success: true, txId: withdrawalTransaction.txId, newBalance: user.balance - withdrawAmount });
+
+    } catch (err) {
+        console.error("Withdraw USDT error:", err);
+        return res.status(500).json({ success: false, error: "Internal server error processing withdrawal." });
     }
 });
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
