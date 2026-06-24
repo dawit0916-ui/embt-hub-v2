@@ -1158,23 +1158,30 @@ app.post('/api/admin/withdraw-action', validateAdmin, async (req, res) => {
     if (action === 'rejected') await User.updateOne({ user_id: request.user_id }, { $inc: { balance: request.amount } });
     res.json({ success: true });
 });
-
 app.get('/api/secure/referrals', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
         const friends = await User.find({ referred_by: userId })
-            .select('username first_name tasks_done balance commission_earned completed_tasks');
-        
-        res.json({ 
+            .select('user_id username first_name completed_tasks');
+
+        const friendIds = friends.map(f => String(f.user_id));
+        const commissions = await WalletTransaction.aggregate([
+            { $match: { userId, txType: 'REFERRAL_BONUS', counterpartyId: { $in: friendIds } } },
+            { $group: { _id: '$counterpartyId', total: { $sum: '$amount' } } }
+        ]);
+        const commissionMap = {};
+        commissions.forEach(c => commissionMap[c._id] = c.total);
+
+        res.json({
             success: true,
             friends: friends.map(f => ({
                 username: f.username || `User_${f.user_id}`,
                 first_name: f.first_name || f.username || 'Friend',
                 tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
-                commission_earned: 0
+                commission_earned: commissionMap[String(f.user_id)] || 0
             }))
         });
-    } catch(e) {
+    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
@@ -1346,12 +1353,18 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
 
         // 6. Referral commission
         if (user.referred_by) {
-            const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
-            await User.updateOne(
-                { user_id: user.referred_by }, 
-                { $inc: { balance: commission } }
-            );
-        }
+    const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
+    await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
+    await WalletTransaction.create({
+        userId: user.referred_by,
+        txType: 'REFERRAL_BONUS',
+        assetType: 'usdt',
+        amount: commission,
+        counterpartyId: String(userId),
+        status: 'accepted',
+        memo: `Commission from ${user.first_name || user.username || userId} completing "${task.title}"`
+    });
+}
 
         // 7. Referral milestone bonus
         if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {
