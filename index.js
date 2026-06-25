@@ -191,6 +191,14 @@ const YoutubeTask = mongoose.model('YoutubeTask', new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
 }));
 
+const TelegramVerification = mongoose.model('TelegramVerification', new mongoose.Schema({
+    userId: { type: Number, required: true, unique: true },
+    inChannel: { type: Boolean, default: false },
+    inGroup: { type: Boolean, default: false },
+    verified: { type: Boolean, default: false },
+    lastChecked: { type: Date, default: Date.now }
+}));
+
 async function logAdminAction(adminUser, action, description) {
     try {
         await AdminActivity.create({
@@ -523,6 +531,45 @@ app.get('/api/admin/check', validateInitData, async (req, res) => {
     } catch (err) {
         console.error("Admin check error:", err);
         res.status(500).json({ success: false, error: "Admin check failed" });
+    }
+});
+app.post('/api/verify-membership', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const CHANNEL_ID = process.env.CHANNEL_ID; // e.g. "@FlamesChannel"
+        const GROUP_ID   = process.env.GROUP_ID;   // e.g. "@FlamesCommunity"
+
+        async function checkMember(chatId) {
+            try {
+                const m = await bot.telegram.getChatMember(chatId, userId);
+                return ['creator','administrator','member','restricted'].includes(m.status);
+            } catch(e) {
+                console.warn(`getChatMember failed for ${chatId}:`, e.message);
+                return false;
+            }
+        }
+
+        const [inChannel, inGroup] = await Promise.all([
+            checkMember(CHANNEL_ID),
+            checkMember(GROUP_ID)
+        ]);
+
+        const verified = inChannel && inGroup;
+
+        // Cache result
+        await TelegramVerification.updateOne(
+            { userId },
+            { $set: { inChannel, inGroup, verified, lastChecked: new Date() } },
+            { upsert: true }
+        );
+
+        return res.json({ verified, inChannel, inGroup });
+
+    } catch (err) {
+        console.error('Verify membership error:', err);
+        return res.status(500).json({ error: 'Server error' });
     }
 });
 app.get('/api/admin/stats', validateAdmin, async (req, res) => {
