@@ -2109,9 +2109,8 @@ app.post('/api/admin/create-test-ads', validateAdmin, async (req, res) => {
         
         const testAds = [
             { adId: 'ad_1_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.05, maxWatchesPerDay: 2 },
-            { adId: 'ad_2_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.10, maxWatchesPerDay: 2 },
-            { adId: 'ad_3_google', network: 'google_ads', unitId: 'test_3', reward: 0.05, maxWatchesPerDay: 2 }
-        ];
+            { adId: 'ad_2_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.10, maxWatchesPerDay: 2 }
+                    ];
         
         const result = await ActiveAd.insertMany(testAds);
         console.log('🔵 [TEST-ADS] Inserted:', result.length);
