@@ -2385,8 +2385,8 @@ app.post('/api/secure/youtube-tasks/claim', validateInitData, async (req, res) =
         }
 
         // Case-insensitive, trimmed compare so small typos in case don't block legit users
-        const submitted = String(code).trim().toLowerCase();
-        const actual = String(task.code).trim().toLowerCase();
+        const submitted = String(code).trim();
+        const actual = String(task.code).trim();
         if (submitted !== actual) {
             return res.status(400).json({ success: false, error: "Incorrect code. Re-watch the video and try again." });
         }
