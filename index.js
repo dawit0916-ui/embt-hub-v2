@@ -1890,24 +1890,26 @@ app.get('/api/secure/available-ads', validateInitData, async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // Get all enabled ads
         const allAds = await ActiveAd.find({ enabled: true });
 
         const adsWithStatus = await Promise.all(
             allAds.map(async (ad) => {
-                const watched = await AdWatch.findOne({
+                const watchedToday = await AdWatch.countDocuments({
                     userId,
                     adId: ad.adId,
                     viewedAt: { $gte: today }
                 });
+
+                const dailyLimit = ad.maxWatchesPerDay || 1;
 
                 return {
                     id: ad.adId,
                     network: ad.network,
                     unitId: ad.unitId,
                     reward: ad.reward,
-                    watched: !!watched,
-                    claimed: watched?.claimedAt ? true : false
+                    dailyLimit,
+                    watchedToday,
+                    locked: watchedToday >= dailyLimit
                 };
             })
         );
@@ -1918,7 +1920,6 @@ app.get('/api/secure/available-ads', validateInitData, async (req, res) => {
         res.status(500).json({ error: 'Failed to load ads' });
     }
 });
-
 // Record that user watched an ad (call this AFTER ad completes)
 app.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
     try {
@@ -1933,18 +1934,17 @@ app.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
-        // Check if already watched today
-        const existing = await AdWatch.findOne({
+        const dailyLimit = ad.maxWatchesPerDay || 1;
+        const watchedToday = await AdWatch.countDocuments({
             userId,
             adId,
             viewedAt: { $gte: today }
         });
 
-        if (existing) {
-            return res.status(400).json({ error: 'Ad already watched today' });
+        if (watchedToday >= dailyLimit) {
+            return res.status(400).json({ error: 'Daily watch limit reached for this ad' });
         }
 
-        // Create watch record
         await AdWatch.create({
             userId,
             adId,
@@ -1953,7 +1953,7 @@ app.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
             watched: true
         });
 
-        return res.json({ success: true, reward: ad.reward });
+        return res.json({ success: true, reward: ad.reward, watchedToday: watchedToday + 1, dailyLimit });
     } catch (err) {
         console.error('Watch ad error:', err);
         res.status(500).json({ error: 'Failed to record watch' });
@@ -1967,11 +1967,11 @@ app.post('/api/secure/claim-ad-reward', validateInitData, async (req, res) => {
         const { adId } = req.body;
 
         const watch = await AdWatch.findOne({ 
-            userId, 
-            adId, 
-            watched: true,
-            claimedAt: null 
-        });
+    userId, 
+    adId, 
+    watched: true,
+    claimedAt: null 
+}).sort({ viewedAt: -1 });
 
         if (!watch) {
             return res.status(400).json({ error: 'Ad watch not found or already claimed' });
@@ -2141,43 +2141,27 @@ app.post('/api/secure/complete-daily-task', validateInitData, async (req, res) =
         res.status(500).json({ error: 'Failed to complete task' });
     }
 });
-app.post('/api/admin/create-test-ads', validateAdmin, async (req, res) => {
+app.post('/api/admin/ads/setup', validateAdmin, async (req, res) => {
     try {
-        console.log('🔵 [TEST-ADS] Starting...');
-        console.log('🔵 [TEST-ADS] Admin user:', req.adminUser?.id || req.user?.id);
-        
-        // Test MongoDB connection
-        const count = await ActiveAd.countDocuments({});
-        console.log('🔵 [TEST-ADS] Current ad count:', count);
-        
-        // Clear
-        const deleteResult = await ActiveAd.deleteMany({});
-        console.log('🔵 [TEST-ADS] Deleted:', deleteResult.deletedCount);
-        
-        const testAds = [
-            { adId: 'ad_1_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.05, maxWatchesPerDay: 2 },
-            { adId: 'ad_2_adgrams', network: 'adgrams', unitId: 'int-35918', reward: 0.10, maxWatchesPerDay: 2 }
-                    ];
-        
-        const result = await ActiveAd.insertMany(testAds);
-        console.log('🔵 [TEST-ADS] Inserted:', result.length);
-        
-        // Log action
-        if (logAdminAction) {
-            await logAdminAction(req.adminUser, 'ads_created', 'Created test ad units');
-        }
-        
-        res.json({ success: true, created: result.length });
+        await ActiveAd.deleteMany({});
+
+        const realAds = [
+            {
+                adId: 'ad_1_adsgram',
+                network: 'adgrams',      // keep this exact string — it's your schema enum value
+                unitId: '36270',         // your real AdsGram Block ID
+                reward: 0.05,            // 👈 set your real reward amount
+                maxWatchesPerDay: 5      // 👈 set your real daily limit
+            }
+        ];
+
+        const result = await ActiveAd.insertMany(realAds);
+        await logAdminAction(req.adminUser, 'ads_created', 'Created real ad units');
+
+        res.json({ success: true, created: result.length, ads: result });
     } catch (e) {
-        console.error('❌ [TEST-ADS] ERROR:', e.message);
-        console.error('❌ [TEST-ADS] Stack:', e.stack);
-        console.error('❌ [TEST-ADS] Full error:', JSON.stringify(e, Object.getOwnPropertyNames(e)));
-        
-        res.status(500).json({ 
-            error: e.message || 'Unknown error',
-            type: e.name,
-            details: e.toString()
-        });
+        console.error('Ads setup error:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 app.get('/api/admin/test', validateAdmin, async (req, res) => {
