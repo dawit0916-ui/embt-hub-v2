@@ -922,21 +922,17 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
         await logAdminAction(req.adminUser, status === 'accepted' ? 'payout_approved' : 'payout_rejected', `${status} ${payout.amount} ${payout.assetType.toUpperCase()} for user ${payout.userId}`);
         // Only refund if you deducted balance during withdrawal creation
         if (status === 'rejected') {
-            await User.updateOne(
-                { user_id: payout.userId },
-                {
-                    $inc: {
-                        balance: payout.amount
-                    }
-                }
-            );
-        }
+    await User.updateOne(
+        { user_id: payout.userId },
+        { $inc: { points: payout.amount } }
+    );
+}
 
         try {
             await bot.telegram.sendMessage(
                 payout.userId,
                 status === 'accepted'
-                    ? `✅ Withdrawal approved\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}`
+                    ? `✅ Withdrawal approved\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}\n /start`
                     : `❌ Withdrawal rejected\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}`
             );
         } catch (telegramError) {
@@ -1195,29 +1191,7 @@ app.get('/api/admin/tickets', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message }); 
     }
 });
-app.post('/api/withdraw/request', validateInitData, async (req, res) => {
-    const { user_id, amount, address, method } = req.body;
-    const user = await User.findOne({ user_id });
-    const settings = await getSettings();
-    if (user.balance < amount || amount < settings.min_withdraw) return res.json({ success: false });
 
-    await User.updateOne({ user_id }, { $inc: { balance: -amount } });
-    await Withdraw.create({ user_id, username: user.user_id.toString(), amount, address, method });
-    bot.telegram.sendMessage(ADMIN_ID, `⚠️ *Web Withdrawal requested:* ${amount} USDT`);
-    res.json({ success: true });
-});
-
-app.get('/api/admin/withdrawals', validateAdmin, async (req, res) => res.json(await Withdraw.find({ status: 'pending' })));
-
-app.post('/api/admin/withdraw-action', validateAdmin, async (req, res) => {
-    const { requestId, action } = req.body;
-    const request = await Withdraw.findById(requestId);
-    if (!request) return res.json({ success: false });
-
-    await Withdraw.updateOne({ _id: requestId }, { $set: { status: action } });
-    if (action === 'rejected') await User.updateOne({ user_id: request.user_id }, { $inc: { balance: request.amount } });
-    res.json({ success: true });
-});
 app.get('/api/secure/referrals', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
@@ -1618,241 +1592,6 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
         });
     }
 });
-/* ==========================================================================
-   PRODUCTION ENGINE LOGIC SECURE CRYPTO WALLET TAB ROUTING SUBSYSTEM
-   ========================================================================== */
-
-// Wallet Transfer Route Cleaned:
-app.post('/api/secure/wallet/transfer', validateInitData, async (req, res) => {
-    try {
-        const senderTelegramId = req.tgUser.id; // Completely bypasses verifySecureEcosystemSessionToken
-        const { recipientIdOrUsername, assetType, amount, memo } = req.body;
-        const processingVolumeAmount = parseFloat(amount);
-        if (isNaN(processingVolumeAmount) || processingVolumeAmount <= 0) {
-            return res.status(400).json({ success: false, error: "Invalid financial clearing volume amount constraints parameter specification." });
-        }
-        
-        if (!['usdt', 'coins', 'points'].includes(assetType)) {
-            return res.status(400).json({ success: false, error: "Invalid targeted account asset ledger destination system mapping target tracking reference." });
-        }
-
-        // Fetch sender transaction logging account document data profile
-        const senderProfileRecordNode = await User.findOne({ user_id: senderTelegramId });
-        if (!senderProfileRecordNode) {
-            return res.status(404).json({ success: false, error: "Origin account record pointer data tracking structure anomaly." });
-        }
-
-        // Anti-collusion identity evaluation validation rules check
-        if (String(senderTelegramId) === String(recipientIdOrUsername) || String(senderProfileRecordNode.username).toLowerCase() === String(recipientIdOrUsername).toLowerCase()) {
-            return res.status(400).json({ success: false, error: "System transaction rejected: Asset self-transfers are disallowed." });
-        }
-
-        // Dynamically resolve target counterparty document data ledger map locations
-        let queryFilterMatchCriterion = {};
-        if (!isNaN(recipientIdOrUsername)) {
-            queryFilterMatchCriterion = { user_id: Number(recipientIdOrUsername) };
-        } else {
-            const cleanSanitizedUsernameString = recipientIdOrUsername.replace('@', '');
-            queryFilterMatchCriterion = { username: new RegExp(`^${cleanSanitizedUsernameString}$`, 'i') };
-        }
-
-        const recipientProfileRecordNode = await User.findOne(queryFilterMatchCriterion);
-        if (!recipientProfileRecordNode) {
-            return res.status(404).json({ success: false, error: "Recipient account match indicator criteria not verified on system logs." });
-        }
-
-        // Evaluate precise available balance metrics classes configurations mappings boundaries
-        if (assetType === 'usdt' && (senderProfileRecordNode.balance || 0) < processingVolumeAmount) {
-            return res.status(400).json({ success: false, error: "Insufficient available liquidation capital balance ledger clearance pool assets." });
-        }
-        if (assetType === 'coins' && (senderProfileRecordNode.coins || 0) < processingVolumeAmount) {
-            return res.status(400).json({ success: false, error: "Insufficient network utility native mint engine transaction items." });
-        }
-        if (assetType === 'points' && (senderProfileRecordNode.points || 0) < processingVolumeAmount) {
-            return res.status(400).json({ success: false, error: "Insufficient active structural allocation performance yields points blocks." });
-        }
-
-        // Atomic multi-account balances debit credit clearing mutation tracking adjustments loop
-        if (assetType === 'usdt') {
-            senderProfileRecordNode.balance = (senderProfileRecordNode.balance || 0) - processingVolumeAmount;
-            recipientProfileRecordNode.balance = (recipientProfileRecordNode.balance || 0) + processingVolumeAmount;
-        } else if (assetType === 'coins') {
-            senderProfileRecordNode.coins = (senderProfileRecordNode.coins || 0) - processingVolumeAmount;
-            recipientProfileRecordNode.coins = (recipientProfileRecordNode.coins || 0) + processingVolumeAmount;
-        } else if (assetType === 'points') {
-            senderProfileRecordNode.points = (senderProfileRecordNode.points || 0) - processingVolumeAmount;
-            recipientProfileRecordNode.points = (recipientProfileRecordNode.points || 0) + processingVolumeAmount;
-        }
-
-        await senderProfileRecordNode.save();
-        await recipientProfileRecordNode.save();
-
-        // Build system cross ledger tracking references block logs documentation items automatically
-        const generatedSharedTrackingLinkReferenceHashId = crypto.randomBytes(6).toString('hex').toUpperCase();
-
-        await WalletTransaction.create([
-            {
-                userId: senderTelegramId,
-                txId: `TXO-${generatedSharedTrackingLinkReferenceHashId}`,
-                txType: 'TRANSFER_OUT',
-                assetType: assetType,
-                amount: processingVolumeAmount,
-                counterpartyId: String(recipientProfileRecordNode.user_id),
-                status: 'accepted',
-                memo: memo || 'P2P Transfer Settlement Ledger Out'
-            },
-            {
-                userId: recipientProfileRecordNode.user_id,
-                txId: `TXI-${generatedSharedTrackingLinkReferenceHashId}`,
-                txType: 'TRANSFER_IN',
-                assetType: assetType,
-                amount: processingVolumeAmount,
-                counterpartyId: String(senderTelegramId),
-                status: 'accepted',
-                memo: memo || 'P2P Transfer Settlement Ledger In'
-            }
-        ]);
-
-        return res.status(200).json({ success: true, message: "Asset balancing tracking transfer sequence processed securely." });
-
-    } catch (catastrophicCrashInternalEngineTrace) {
-        console.error("Crash executing wallet transfer system node loop:", catastrophicCrashInternalEngineTrace);
-        return res.status(500).json({ success: false, error: "Internal processing engine loop crash fault detected on core nodes layers." });
-    }
-});
-
-// API ROUTE B: Secure referral metric checks framework milestone cashout extractor endpoint
-app.post('/api/secure/wallet/withdraw-tier', validateInitData, async (req, res) => {
-    try {
-        const telegramUserId = req.tgUser.id;
-        const { inviteThreshold, payoutAmount, network, cryptoAddress } = req.body;
-        const userProfileRecordNode = await User.findOne({ user_id: telegramUserId });
-        if (!userProfileRecordNode) {
-            return res.status(404).json({ success: false, error: "Target data cluster path context references not mapped correctly." });
-        }
-        // Database verified referral structure rules check validation 
-        const databaseVerifiedInvitesCount = parseInt(userProfileRecordNode.referralCount || 0);
-        if (databaseVerifiedInvitesCount < parseInt(inviteThreshold)) {
-            return res.status(400).json({ success: false, error: `Ecosystem audit violation: Milestone tracking threshold requirement mapping verification failure.` });
-        }
-        // Prevent milestone duplication attacks or race condition double-claims
-        const duplicateClaimVerificationTraceCheck = await WalletTransaction.findOne({
-            userId: telegramUserId,
-            txType: 'WITHDRAWAL',
-            amount: parseFloat(payoutAmount),
-            status: { $in: ['pending', 'accepted'] }
-        });
-
-        if (duplicateClaimVerificationTraceCheck) {
-            return res.status(400).json({ success: false, error: "A clearance payout transaction matched this milestone allocation tier block model already." });
-        }
-const withdrawalAmount = parseFloat(payoutAmount);
-
-if (userProfileRecordNode.balance < withdrawalAmount) {
-    return res.status(400).json({
-        success: false,
-        error: "Insufficient balance."
-    });
-}
-
-await User.updateOne(
-    { user_id: telegramUserId },
-    {
-        $inc: {
-            balance: -withdrawalAmount
-        }
-    }
-);
-        // Create transaction statement directly into processing queue
-        const withdrawalTransaction = await WalletTransaction.create({
-    userId: telegramUserId,
-    txType: 'WITHDRAWAL',
-    assetType: 'usdt',
-    amount: parseFloat(payoutAmount),
-    counterpartyId: "EXTERNAL_MAINNET_SETTLEMENT_RESERVE",
-    status: 'pending',
-    network,
-    cryptoAddress,
-    memo: `Milestone Cashout Allocation Tier Check for ${inviteThreshold} Invites Completed`
-});
-   try {
-    const adminMessage = `
-🚨 NEW MILESTONE WITHDRAWAL REQUEST
-
-🆔 TX ID: ${withdrawalTransaction.txId}
-
-👤 User ID: ${userProfileRecordNode.user_id}
-👤 Username: @${userProfileRecordNode.username || 'N/A'}
-👤 First Name: ${userProfileRecordNode.first_name || 'N/A'}
-
-💰 Amount: ${payoutAmount} USDT
-🌐 Network: ${network}
-📬 Address:
-${cryptoAddress}
-
-👥 Referrals: ${databaseVerifiedInvitesCount}
-🎯 Milestone: ${inviteThreshold}
-
-📅 Time: ${new Date().toLocaleString()}
-
-Status: PENDING
-`;
-
-    await bot.telegram.sendMessage(
-        ADMIN_ID,
-        adminMessage
-    );
-
-} catch (adminNotificationError) {
-    console.error(
-        "Admin notification error:",
-        adminNotificationError
-    );
-            }     
-        try {
-    await bot.telegram.sendMessage(
-        telegramUserId,
-        `
-✅ Withdrawal Request Submitted
-
-🆔 TX ID: ${withdrawalTransaction.txId}
-
-💰 Amount: ${payoutAmount} USDT
-🌐 Network: ${network}
-
-Your request has been placed in the review queue.
-You will receive another notification when it is approved or rejected.
-`
-    );
-} catch (userNotificationError) {
-    console.error(
-        "User notification error:",
-        userNotificationError
-    );
-            }
-// Log withdrawal to channel
-const wdMsg =
-    `💸 *WITHDRAWAL REQUEST*\n` +
-    `🆔 TX: \`${withdrawalTransaction.txId}\`\n` +
-    `👤 User: \`${telegramUserId}\` @${userProfileRecordNode.username || 'N/A'}\n` +
-    `💰 Amount: ${payoutAmount} USDT\n` +
-    `🌐 Network: ${network}\n` +
-    `📬 Address: \`${cryptoAddress}\`\n` +
-    `👥 Referrals: ${databaseVerifiedInvitesCount}\n` +
-    `📅 ${new Date().toLocaleString()}`;
-const wdChannelMsgId = await postToChannel(wdMsg);
-if (wdChannelMsgId) {
-    await WalletTransaction.updateOne({ _id: withdrawalTransaction._id }, { $set: { channelMessageId: wdChannelMsgId } });
-}
-        return res.status(200).json({ success: true, message: "Milestone extraction tracking payout successfully registered into clearance queues." });
-
-    } catch (catastrophicCrashInternalEngineTrace) {
-        console.error("Crash tracing milestone tier payout extraction pipeline loops:", catastrophicCrashInternalEngineTrace);
-        return res.status(500).json({ success: false, error: "Internal operational structural fault trace error raised on system extraction nodes." });
-    }
-});
-
-
 
 app.get('/api/admin/registry', validateAdmin, async (req, res) => {
     try {
@@ -2175,7 +1914,7 @@ app.get('/api/admin/test', validateAdmin, async (req, res) => {
 app.get('/api/secure/leaderboard', validateInitData, async (req, res) => {
     try {
         const type = req.query.type === 'invites' ? 'invites' : 'points';
-        const sortField = type === 'invites' ? 'referralCount' : 'points';
+        const sortField = type === 'invites' ? 'referralCount' : 'balance';
         const userId = req.tgUser.id;
 
         const topUsers = await User.find({ is_banned: false })
@@ -2234,12 +1973,11 @@ app.post('/api/secure/wallet/withdraw-usdt', validateInitData, async (req, res) 
         const user = await User.findOne({ user_id: userId });
         if (!user) return res.status(404).json({ success: false, error: "User not found." });
         if (user.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
-        if ((user.balance || 0) < withdrawAmount) {
-            return res.status(400).json({ success: false, error: "Insufficient balance." });
-        }
+        if ((user.points || 0) < withdrawAmount) {
+    return res.status(400).json({ success: false, error: "Insufficient USDT balance." });
+}
 
-        await User.updateOne({ user_id: userId }, { $inc: { balance: -withdrawAmount } });
-
+await User.updateOne({ user_id: userId }, { $inc: { points: -withdrawAmount } });
         const withdrawalTransaction = await WalletTransaction.create({
             userId,
             txType: 'WITHDRAWAL',
@@ -2270,8 +2008,7 @@ app.post('/api/secure/wallet/withdraw-usdt', validateInitData, async (req, res) 
             await WalletTransaction.updateOne({ _id: withdrawalTransaction._id }, { $set: { channelMessageId: channelMsgId } });
         }
 
-        return res.json({ success: true, txId: withdrawalTransaction.txId, newBalance: user.balance - withdrawAmount });
-
+        return res.json({ success: true, txId: withdrawalTransaction.txId, newBalance: user.points - withdrawAmount });
     } catch (err) {
         console.error("Withdraw USDT error:", err);
         return res.status(500).json({ success: false, error: "Internal server error processing withdrawal." });
@@ -2462,6 +2199,95 @@ app.post('/api/secure/youtube-tasks/claim', validateInitData, async (req, res) =
     }
 });
 
+app.post('/api/secure/exchange-dash', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { dashAmount, ticketsAmount } = req.body;
+
+        const dash   = parseInt(dashAmount);
+        const tickets = parseInt(ticketsAmount);
+
+        // Validate rate: 100 DASH = 1 TICKET
+        if (!dash || !tickets || dash !== tickets * 100) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Invalid exchange rate. 100 DASH = 1 TICKET." 
+            });
+        }
+
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ success: false, error: "User not found." });
+        if (user.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
+
+        if ((user.balance || 0) < dash) {
+            return res.status(400).json({ 
+                success: false, 
+                error: `Insufficient DASH. You have ${parseInt(user.balance || 0).toLocaleString()} DASH.` 
+            });
+        }
+
+        // Deduct DASH, add TICKETS
+        await User.updateOne(
+            { user_id: userId },
+            {
+                $inc: {
+                    balance: -dash,    // DASH = balance field
+                    coins:   +tickets  // TICKET = coins field
+                }
+            }
+        );
+
+        const updatedUser = await User.findOne({ user_id: userId });
+
+        return res.json({
+            success: true,
+            newDash:    parseInt(updatedUser.balance || 0),
+            newUsdt:    parseFloat(updatedUser.points  || 0),
+            newTickets: parseInt(updatedUser.coins    || 0)
+        });
+
+    } catch (err) {
+        console.error("Exchange DASH error:", err);
+        return res.status(500).json({ success: false, error: "Internal server error." });
+    }
+});
+
+app.get('/api/secure/wallet/history', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const status = req.query.status || 'pending';
+
+        const history = await WalletTransaction.find({
+            userId,
+            ...(status !== 'all' ? { status } : {})
+        })
+        .sort({ timestamp: -1 })
+        .limit(20)
+        .lean();
+
+        return res.json({ success: true, history });
+    } catch (err) {
+        console.error("Wallet history error:", err);
+        return res.status(500).json({ error: "Failed to load history." });
+    }
+});
+
+app.get('/api/secure/history', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const user = await User.findOne({ user_id: userId }).lean();
+        if (!user) return res.status(404).json({ error: "User not found." });
+
+        const history = (user.history || [])
+            .sort((a, b) => new Date(b.date) - new Date(a.date))
+            .slice(0, 50);
+
+        return res.json({ success: true, history });
+    } catch (err) {
+        console.error("History fetch error:", err);
+        return res.status(500).json({ error: "Failed to load history." });
+    }
+});            
 // 🤖 Automated Background Worker Infrastructure Timer (24h loop)
 setInterval(async () => {
     try {
