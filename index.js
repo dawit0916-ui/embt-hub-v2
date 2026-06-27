@@ -1499,100 +1499,111 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
         }
     })();
 });
-
-
-
 app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
     try {
-        
-        const validatedTelegramUserId = req.tgUser.id; // No duplicate parsing needed!
-        const userRecord = await User.findOne({ user_id: validatedTelegramUserId });
-        if (!userRecord) {
-            return res.status(404).json({ 
-                success: false, 
-                error: "Account profile ledger not found in database records." 
-            });
+        const userId = req.tgUser.id;
+        const user = await User.findOne({ user_id: userId });
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: "User not found." });
         }
 
-        // 2. Strict Capital Balance Validation Check Gating
-        // Accessing the coins property (using userRecord.coins based on your profile view metrics)
-        const currentAvailableCoins = parseInt(userRecord.coins || 0);
-        if (currentAvailableCoins < 1) {
-            return res.status(400).json({
-                success: false,
-                error: "Insufficient funds: 1 Coin is required to execute a spin transaction."
-            });
+        // Check ticket balance (coins field)
+        if ((user.coins || 0) < 1) {
+            return res.status(400).json({ success: false, error: "Not enough tickets. 1 TICKET required per spin." });
         }
 
-        // Deduct exactly 1 play unit fee immediately before computing prizes (Prevents race-conditions)
-        userRecord.coins = currentAvailableCoins - 1;
+        // Deduct 1 ticket immediately
+        user.coins = (user.coins || 0) - 1;
 
-        // 3. Compute Probabilities matching frontend indices EXACTLY:
-        // [0: 10 USDT, 1: 25 Pts, 2: TRY AGAIN, 3: 100 Pts, 4: 1 TON, 5: 500 Pts, 6: BONUS SPIN, 7: 50 USDT]
-        const distributionPick = Math.random() * 100;
-        let winningIndex = 2; // Default fallback to Index 2: "TRY AGAIN"
-        let rewardNotificationString = "TRY AGAIN";
+        // Probability table (weights must sum to 1.0)
+        const probabilities = [
+            { index: 0, weight: 0.08 },  // 0.07 USDT
+            { index: 1, weight: 0.12 },  // 50 DASH
+            { index: 2, weight: 0.07 },  // 0.05 USDT
+            { index: 3, weight: 0.18 },  // TRY AGAIN
+            { index: 4, weight: 0.05 },  // 0.1 USDT
+            { index: 5, weight: 0.10 },  // 1 TICKET
+            { index: 6, weight: 0.18 },  // TRY AGAIN
+            { index: 7, weight: 0.02 },  // JACKPOT
+            { index: 8, weight: 0.15 },  // 0.01 USDT
+            { index: 9, weight: 0.05 },  // 25 DASH
+        ];
+        // Total = 1.00
 
-        if (distributionPick < 25) {
-            // 45% Odds: 25 Points
-            winningIndex = 1;
-            userRecord.points = (userRecord.points || 0) + 25;
-            rewardNotificationString = "25 Points Added";
-        } else if (distributionPick < 40) {
-            // 30% Odds: TRY AGAIN
-            winningIndex = 2;
-            rewardNotificationString = "Try Again Next Time";
-        } else if (distributionPick < 50) {
-            // 15% Odds: 100 Points
-            winningIndex = 3;
-            userRecord.points = (userRecord.points || 0) + 100;
-            rewardNotificationString = "100 Points Added";
-        } else if (distributionPick < 60) {
-            // 6% Odds: Extra Reward Bonus Spin! (Refunds the 1 coin cost)
-            winningIndex = 4;
-            userRecord.coins = (userRecord.coins || 0) + 1;
-            rewardNotificationString = "1 Free Extra Spin Awarded";
-        } else if (distributionPick < 70) {
-            // 2.5% Odds: High Reward Tier 500 Points
-            winningIndex = 5;
-            userRecord.points = (userRecord.points || 0) + 500;
-            rewardNotificationString = "500 Premium Points Added";
-        } else if (distributionPick < 90) {
-            // 0.4% Odds: Premium USDT Tier (10 USDT)
-            winningIndex = 0;
-            userRecord.balance = (userRecord.balance || 0) + 1.00;
-            rewardNotificationString = "1.00 USDT Added to Wallet";
-        } else {
-            // 3% Odds: Ultra Jackpot Grand Tier (50 USDT)
-            winningIndex = 7;
-            userRecord.balance = (userRecord.balance || 0) + 5.00;
-            rewardNotificationString = "5.00 USDT Grand Prize Added!";
+        // RNG roll
+        const roll = Math.random();
+        let sum = 0;
+        let winningIndex = 3; // default TRY AGAIN
+
+        for (const slot of probabilities) {
+            sum += slot.weight;
+            if (roll <= sum) {
+                winningIndex = slot.index;
+                break;
+            }
         }
 
-        // Note: Frontend Segment Index 4 (1 TON) is reserved for future promotional allocation distribution rules
+        // Apply reward
+        let rewardMessage = "Try Again";
 
-        // 4. Save modified values back to database cluster
-        await userRecord.save();
+        switch (winningIndex) {
+            case 0: // 0.07 USDT
+                user.points = (user.points || 0) + 0.07;
+                rewardMessage = "+0.07 USDT";
+                break;
+            case 1: // 50 DASH
+                user.balance = (user.balance || 0) + 50;
+                rewardMessage = "+50 DASH";
+                break;
+            case 2: // 0.05 USDT
+                user.points = (user.points || 0) + 0.05;
+                rewardMessage = "+0.05 USDT";
+                break;
+            case 3: // TRY AGAIN
+                rewardMessage = "Try Again";
+                break;
+            case 4: // 0.1 USDT
+                user.points = (user.points || 0) + 0.1;
+                rewardMessage = "+0.1 USDT";
+                break;
+            case 5: // 1 TICKET (refund basically)
+                user.coins = (user.coins || 0) + 1;
+                rewardMessage = "+1 TICKET";
+                break;
+            case 6: // TRY AGAIN
+                rewardMessage = "Try Again";
+                break;
+            case 7: // JACKPOT 500 DASH
+                user.balance = (user.balance || 0) + 500;
+                rewardMessage = "+500 DASH JACKPOT!";
+                break;
+            case 8: // 0.01 USDT
+                user.points = (user.points || 0) + 0.01;
+                rewardMessage = "+0.01 USDT";
+                break;
+            case 9: // 25 DASH
+                user.balance = (user.balance || 0) + 25;
+                rewardMessage = "+25 DASH";
+                break;
+        }
 
-        // 5. Return data synchronization properties matching frontend state engines expectations
-        return res.status(200).json({
+        await user.save();
+
+        return res.json({
             success: true,
-            winningIndex: winningIndex,
-            rewardNotificationString: rewardNotificationString,
-            newCoinBalance: parseInt(userRecord.coins || 0),
-            newPointBalance: parseFloat(userRecord.points || 0),
-            newWalletBalance: parseFloat(userRecord.balance || 0)
+            winningIndex,
+            rewardNotificationString: rewardMessage,
+            newCoinBalance:   parseInt(user.coins   || 0),  // TICKETS
+            newPointBalance:  parseFloat(user.points || 0), // USDT
+            newWalletBalance: parseFloat(user.balance || 0) // DASH
         });
 
-    } catch (networkExceptionTrace) {
-        console.error("Fatal error inside secure lucky-spin execution node:", networkExceptionTrace);
-        return res.status(500).json({ 
-            success: false, 
-            error: "Internal server error updating game balance matrices." 
-        });
+    } catch (err) {
+        console.error("Lucky spin error:", err);
+        return res.status(500).json({ success: false, error: "Internal server error." });
     }
 });
-
 app.get('/api/admin/registry', validateAdmin, async (req, res) => {
     try {
         const adminUsers = await User.find({ user_id: { $in: admins } })
