@@ -576,10 +576,31 @@ app.get('/api/admin/stats', validateAdmin, async (req, res) => {
     try {
         const totalUsers = await User.countDocuments();
         const pendingWithdrawals = await WalletTransaction.countDocuments({ txType: 'WITHDRAWAL', status: 'pending' });
-        const totalPaid = await WalletTransaction.aggregate([{ $match: { txType: 'WITHDRAWAL', status: 'accepted' } }, { $group: { _id: null, total: { $sum: "$amount" } } }]);
+        const totalPaid = await WalletTransaction.aggregate([
+            { $match: { txType: 'WITHDRAWAL', status: 'accepted' } }, 
+            { $group: { _id: null, total: { $sum: "$amount" } } }
+        ]);
+        const totalTasks = await Task.countDocuments();
         const settings = await getSettings();
-        res.json({ users: totalUsers, pending: pendingWithdrawals, paid: totalPaid[0]?.total || 0, maintenance: settings.maintenance_mode });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+
+        // points field = USDT in our currency system
+        const totalUsdtInSystem = await User.aggregate([
+            { $group: { _id: null, total: { $sum: "$points" } } }
+        ]);
+
+        res.json({ 
+            users: totalUsers, 
+            pending: pendingWithdrawals, 
+            paid: totalPaid[0]?.total || 0,
+            tasks: totalTasks,
+            totalUsdt: totalUsdtInSystem[0]?.total || 0,
+            maintenance: settings.maintenance_mode,
+            ref_bonus: settings.ref_bonus_amount,
+            ref_percent: settings.ref_commission_percent
+        });
+    } catch (e) { 
+        res.status(500).json({ error: e.message }); 
+    }
 });
 
 app.get('/api/secure/profile', validateInitData, async (req, res) => {
