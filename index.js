@@ -211,6 +211,7 @@ const SpinEconomySchema = new mongoose.Schema({
     targetUsdtPerSpin: { type: Number, default: 1 / 30 },
     minUsdtProbability: { type: Number, default: 0.15 },
     maxUsdtProbability: { type: Number, default: 0.60 },
+    maxSpinsPerDay: { type: Number, default: 10 }, // 0 = unlimited
     updatedAt: { type: Date, default: Date.now }
 });
 const SpinEconomy = mongoose.models.SpinEconomy || mongoose.model('SpinEconomy', SpinEconomySchema);
@@ -364,6 +365,11 @@ function applyNewUserBonus(baseProbability, userTotalSpins, maxBound) {
     const taper = (5 - userTotalSpins) / 5; // 1.0 on spin #1 → 0.2 on spin #5
     const bonus = 0.08 * taper;
     return Math.min(maxBound, baseProbability + bonus);
+}
+function getUTCDayStart(date = new Date()) {
+    const d = new Date(date);
+    d.setUTCHours(0, 0, 0, 0);
+    return d;
 }
 // ==========================================================================
 // SHARED TELEGRAM INIT DATA VERIFICATION
@@ -1622,29 +1628,65 @@ app.get('/api/admin/spin-economy/stats', validateAdmin, async (req, res) => {
             payoutRatio: expectedSoFar > 0 ? (econ.totalUsdtAwarded / expectedSoFar) : null,
             currentUsdtProbabilityMass: computeUsdtProbabilityMass(econ),
             minUsdtProbability: econ.minUsdtProbability,
-            maxUsdtProbability: econ.maxUsdtProbability
+            maxUsdtProbability: econ.maxUsdtProbability,
+            maxSpinsPerDay: econ.maxSpinsPerDay
         });
     } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
-
 app.post('/api/admin/spin-economy/config', validateAdmin, async (req, res) => {
     try {
-        const { targetUsdtPerSpin, minUsdtProbability, maxUsdtProbability } = req.body;
+        const { targetUsdtPerSpin, minUsdtProbability, maxUsdtProbability, maxSpinsPerDay } = req.body;
         const updates = {};
         if (targetUsdtPerSpin   !== undefined) updates.targetUsdtPerSpin   = Number(targetUsdtPerSpin);
         if (minUsdtProbability  !== undefined) updates.minUsdtProbability  = Number(minUsdtProbability);
         if (maxUsdtProbability  !== undefined) updates.maxUsdtProbability  = Number(maxUsdtProbability);
+        if (maxSpinsPerDay      !== undefined) updates.maxSpinsPerDay      = Number(maxSpinsPerDay);
 
         await SpinEconomy.updateOne({ key: 'global' }, { $set: { ...updates, updatedAt: new Date() } }, { upsert: true });
         await logAdminAction(req.adminUser, 'spin_economy_updated', `Updated: ${Object.keys(updates).join(', ')}`);
         res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false, error: e.message }); }
 });
+app.get('/api/admin/spin-economy/recent-logs', validateAdmin, async (req, res) => {
+    try {
+        const limit = Math.min(100, parseInt(req.query.limit) || 50);
+        const logs = await SpinLog.find().sort({ timestamp: -1 }).limit(limit).lean();
+
+        const userIds = [...new Set(logs.map(l => l.userId))];
+        const users = await User.find({ user_id: { $in: userIds } }).select('user_id username first_name').lean();
+        const userMap = {};
+        users.forEach(u => { userMap[u.user_id] = u.username || u.first_name || `User_${u.user_id}`; });
+
+        const enriched = logs.map(l => ({ ...l, displayName: userMap[l.userId] || `User_${l.userId}` }));
+
+        res.json({ success: true, logs: enriched });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
 app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
 
-        // 1. ATOMIC ticket deduction — closes the double-spend race condition.
+        // 0. Existence + ban check up front — no ticket deducted if either fails.
+        const userDoc = await User.findOne({ user_id: userId }).select('is_banned coins totalSpins').lean();
+        if (!userDoc) return res.status(404).json({ success: false, error: "User not found." });
+        if (userDoc.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
+
+        // 1. Daily spin limit — checked before touching tickets.
+        const econ = await getSpinEconomy();
+        const dayStart = getUTCDayStart();
+        const spinsToday = await SpinLog.countDocuments({ userId, timestamp: { $gte: dayStart } });
+
+        if (econ.maxSpinsPerDay && spinsToday >= econ.maxSpinsPerDay) {
+            return res.status(429).json({
+                success: false,
+                error: `Daily spin limit reached (${econ.maxSpinsPerDay}/day). Resets at midnight UTC.`,
+                dailyLimitReached: true
+            });
+        }
+
+        // 2. ATOMIC ticket deduction — closes the double-spend race condition.
         const userAfterDeduction = await User.findOneAndUpdate(
             { user_id: userId, coins: { $gte: 1 } },
             { $inc: { coins: -1 } },
@@ -1652,25 +1694,18 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
         );
 
         if (!userAfterDeduction) {
-            const exists = await User.exists({ user_id: userId });
-            if (!exists) return res.status(404).json({ success: false, error: "User not found." });
             return res.status(400).json({ success: false, error: "Not enough tickets. 1 TICKET required per spin." });
         }
-        if (userAfterDeduction.is_banned) {
-            await User.updateOne({ user_id: userId }, { $inc: { coins: 1 } }); // refund the ticket
-            return res.status(403).json({ success: false, error: "Account is banned." });
-        }
 
-        // 2. Live pacing read + new-user nudge
-        const econ = await getSpinEconomy();
+        // 3. Live pacing read + new-user nudge (reuse econ already fetched above)
         let usdtProbabilityMass = computeUsdtProbabilityMass(econ);
         usdtProbabilityMass = applyNewUserBonus(usdtProbabilityMass, userAfterDeduction.totalSpins || 0, econ.maxUsdtProbability);
 
-        // 3. Pick pool, then index within pool
+        // 4. Pick pool, then index within pool
         const useUsdtPool = Math.random() < usdtProbabilityMass;
         const winningIndex = useUsdtPool ? pickWeightedIndex(BASE_USDT_WEIGHTS) : pickWeightedIndex(BASE_OTHER_WEIGHTS);
 
-        // 4. Resolve reward
+        // 5. Resolve reward
         const baseReward = SPIN_REWARD_AMOUNTS[winningIndex];
         let rewardType = baseReward.type;
         let rewardAmount = baseReward.amount;
@@ -1718,7 +1753,7 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
 
         const updatedUser = await User.findOneAndUpdate({ user_id: userId }, userUpdate, { new: true });
 
-        // 5. Update global ledger (fire-and-forget — fine, see scaling notes)
+        // 6. Update global ledger (fire-and-forget)
         const usdtAwardedThisSpin = (rewardType === 'usdt' || rewardType === 'jackpot_usdt') ? rewardAmount : 0;
         const dashAwardedThisSpin = (rewardType === 'dash' || rewardType === 'jackpot_dash') ? rewardAmount : 0;
 
@@ -1727,7 +1762,7 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
             { $inc: { totalSpins: 1, totalUsdtAwarded: usdtAwardedThisSpin, totalDashAwarded: dashAwardedThisSpin }, $set: { updatedAt: new Date() } }
         ).catch(e => console.error('SpinEconomy update failed:', e.message));
 
-        // 6. Audit log
+        // 7. Audit log
         SpinLog.create({
             userId, winningIndex, rewardType, rewardAmount,
             ticketCost: 1,
@@ -1741,6 +1776,7 @@ app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
             rewardType,
             rewardAmount,
             rewardNotificationString: rewardMessage,
+            spinsRemainingToday: econ.maxSpinsPerDay ? Math.max(0, econ.maxSpinsPerDay - spinsToday - 1) : null,
             newCoinBalance:   parseInt(updatedUser.coins   || 0),
             newPointBalance:  parseFloat(updatedUser.points || 0),
             newWalletBalance: parseFloat(updatedUser.balance || 0)
