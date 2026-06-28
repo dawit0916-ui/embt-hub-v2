@@ -18,7 +18,7 @@ app.use('/api', enforceGlobalMaintenanceGate);
 // --- DATABASE SCHEMAS ---
 
 const User = mongoose.model('User', new mongoose.Schema({
-    user_id: Number,
+    user_id: { type: Number, index: true },
     first_name: { type: String, default: null },
     username: { type: String, default: null },
     balance: { type: Number, default: 0 },
@@ -38,6 +38,10 @@ const User = mongoose.model('User', new mongoose.Schema({
     penalized_tasks: [String],
     is_banned: { type: Boolean, default: false },
     last_admin_active: { type: Date, default: null },
+    totalSpins: { type: Number, default: 0 },
+    totalUsdtWonFromSpins: { type: Number, default: 0 },
+    firstSpinAt: { type: Date, default: null },
+    lastSpinAt: { type: Date, default: null },
     referred_by: { type: Number, default: null } 
 }));
 
@@ -199,6 +203,31 @@ const TelegramVerification = mongoose.model('TelegramVerification', new mongoose
     lastChecked: { type: Date, default: Date.now }
 }));
 
+const SpinEconomySchema = new mongoose.Schema({
+    key: { type: String, unique: true, default: 'global' },
+    totalSpins: { type: Number, default: 0 },
+    totalUsdtAwarded: { type: Number, default: 0 },
+    totalDashAwarded: { type: Number, default: 0 },
+    targetUsdtPerSpin: { type: Number, default: 1 / 30 },
+    minUsdtProbability: { type: Number, default: 0.15 },
+    maxUsdtProbability: { type: Number, default: 0.60 },
+    updatedAt: { type: Date, default: Date.now }
+});
+const SpinEconomy = mongoose.models.SpinEconomy || mongoose.model('SpinEconomy', SpinEconomySchema);
+
+const SpinLogSchema = new mongoose.Schema({
+    userId: { type: Number, required: true, index: true },
+    winningIndex: Number,
+    rewardType: String,
+    rewardAmount: Number,
+    ticketCost: { type: Number, default: 1 },
+    usdtProbabilityUsed: Number,
+    isNewUserBonus: { type: Boolean, default: false },
+    timestamp: { type: Date, default: Date.now }
+});
+const SpinLog = mongoose.models.SpinLog || mongoose.model('SpinLog', SpinLogSchema);
+
+
 async function logAdminAction(adminUser, action, description) {
     try {
         await AdminActivity.create({
@@ -277,29 +306,82 @@ async function getSettings() {
         return null;
     }
 }
-// ==========================================================================
-// UNIFIED, HIGH-STABILITY TELEGRAM DATA VALIDATION MIDDLEWARE
-// ==========================================================================
-const validateInitData = (req, res, next) => {
-    // 1. Fetch case-insensitive headers safely
-    const rawInitData = req.headers['x-telegram-init-data'] || req.headers['X-Telegram-Init-Data'];
-    if (!rawInitData) {
-        return res.status(401).json({ error: "No initialization data payload provided" });
+const BASE_USDT_WEIGHTS  = { 0: 0.08, 2: 0.07, 4: 0.05, 8: 0.15 };               // sums to 0.35
+const BASE_OTHER_WEIGHTS = { 1: 0.12, 3: 0.18, 5: 0.10, 6: 0.18, 7: 0.02, 9: 0.05 }; // sums to 0.65
+const BASELINE_USDT_PROBABILITY_MASS = 0.35;
+
+const SPIN_REWARD_AMOUNTS = {
+    0: { type: 'usdt', amount: 0.07 },
+    1: { type: 'dash', amount: 50 },
+    2: { type: 'usdt', amount: 0.05 },
+    3: { type: 'tryagain', amount: 0 },
+    4: { type: 'usdt', amount: 0.1 },
+    5: { type: 'ticket', amount: 1 },
+    6: { type: 'tryagain', amount: 0 },
+    7: { type: 'jackpot', amount: null }, // resolved by JACKPOT_FLAVORS below
+    8: { type: 'usdt', amount: 0.01 },
+    9: { type: 'dash', amount: 25 },
+};
+
+const JACKPOT_FLAVORS = [
+    { type: 'jackpot_usdt',   amount: 5 },
+    { type: 'jackpot_dash',   amount: 500 },
+    { type: 'jackpot_ticket', amount: 10 },
+];
+
+function pickWeightedIndex(weightMap) {
+    const entries = Object.entries(weightMap);
+    const total = entries.reduce((s, [, w]) => s + w, 0);
+    let roll = Math.random() * total;
+    for (const [idx, w] of entries) {
+        roll -= w;
+        if (roll <= 0) return Number(idx);
     }
+    return Number(entries[entries.length - 1][0]);
+}
+
+async function getSpinEconomy() {
+    let econ = await SpinEconomy.findOne({ key: 'global' });
+    if (!econ) econ = await SpinEconomy.create({ key: 'global' });
+    return econ;
+}
+
+function computeUsdtProbabilityMass(econ) {
+    if (econ.totalSpins < 50) return BASELINE_USDT_PROBABILITY_MASS; // not enough data yet
+
+    const expectedSoFar = econ.targetUsdtPerSpin * econ.totalSpins;
+    if (expectedSoFar <= 0) return BASELINE_USDT_PROBABILITY_MASS;
+
+    const paceRatio = (expectedSoFar - econ.totalUsdtAwarded) / expectedSoFar; // >0 = underpaying
+    const GAIN = 0.4; // tune empirically — higher = more aggressive correction
+    const adjusted = BASELINE_USDT_PROBABILITY_MASS * (1 + GAIN * paceRatio);
+
+    return Math.max(econ.minUsdtProbability, Math.min(econ.maxUsdtProbability, adjusted));
+}
+
+function applyNewUserBonus(baseProbability, userTotalSpins, maxBound) {
+    if (userTotalSpins >= 5) return baseProbability;
+    const taper = (5 - userTotalSpins) / 5; // 1.0 on spin #1 → 0.2 on spin #5
+    const bonus = 0.08 * taper;
+    return Math.min(maxBound, baseProbability + bonus);
+}
+// ==========================================================================
+// SHARED TELEGRAM INIT DATA VERIFICATION
+// ==========================================================================
+function verifyTelegramInitData(rawInitData) {
+    if (!rawInitData) return null;
 
     try {
-        // 2. Clean out authorization token prefixes ('tma ' or 'Bearer ') safely if passed
-        const cleanInitData = rawInitData.startsWith('tma ') 
-            ? rawInitData.substring(4) 
-            : rawInitData.startsWith('Bearer ') 
-                ? rawInitData.substring(7) 
+        const cleanInitData = rawInitData.startsWith('tma ')
+            ? rawInitData.substring(4)
+            : rawInitData.startsWith('Bearer ')
+                ? rawInitData.substring(7)
                 : rawInitData;
 
         const urlParams = new URLSearchParams(cleanInitData);
         const hash = urlParams.get('hash');
         urlParams.delete('hash');
 
-        // 3. Robust, specification-compliant array sort (Fixes encoding bugs for external accounts)
         const dataCheckArr = [];
         for (const [key, value] of urlParams.entries()) {
             dataCheckArr.push(`${key}=${value}`);
@@ -307,39 +389,45 @@ const validateInitData = (req, res, next) => {
         dataCheckArr.sort();
         const dataCheckString = dataCheckArr.join('\n');
 
-        // 4. Verification signature cryptography validation execution
         const secretKey = crypto.createHmac('sha256', 'WebAppData').update(process.env.BOT_TOKEN).digest();
         const calculatedHmac = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
 
-        if (calculatedHmac === hash) {
-            // Save the user data securely inside the request loop context
-            const userRaw = urlParams.get('user');
-            req.tgUser = userRaw ? JSON.parse(userRaw) : null;
-            return next();
-        } else {
-            console.warn(`[Security Alert] Cryptographic signature hash verification mismatch.`);
-            return res.status(403).json({ error: "Signature hash mismatch or expired session state." });
-        }
+        if (calculatedHmac !== hash) return null;
 
+        const userRaw = urlParams.get('user');
+        return userRaw ? JSON.parse(userRaw) : null;
     } catch (err) {
         console.error("[Auth Parsing Error Stack]:", err.message);
-        return res.status(400).json({ error: "Malformed structural verification payload context." });
+        return null;
     }
+}
+
+const validateInitData = (req, res, next) => {
+    const rawInitData = req.headers['x-telegram-init-data'] || req.headers['X-Telegram-Init-Data'];
+    const user = verifyTelegramInitData(rawInitData);
+
+    if (!user) {
+        console.warn(`[Security Alert] Signature verification failed or payload missing.`);
+        return res.status(403).json({ error: "Signature hash mismatch or expired session state." });
+    }
+
+    req.tgUser = user;
+    return next();
 };
 
-
 const validateAdmin = async (req, res, next) => {
-    const initData = req.headers['x-telegram-init-data'];
-    if (!initData) return res.status(401).json({ error: "Unauthorized" });
+    const rawInitData = req.headers['x-telegram-init-data'] || req.headers['X-Telegram-Init-Data'];
+    const user = verifyTelegramInitData(rawInitData);
 
-    const urlParams = new URLSearchParams(initData);
-    const user = JSON.parse(urlParams.get('user'));
-    
+    if (!user) {
+        return res.status(403).json({ error: "Signature hash mismatch or expired session state." });
+    }
     if (!admins.includes(user.id)) {
         return res.status(403).json({ error: "Access Denied: Admin Only" });
     }
 
     req.adminUser = user;
+    req.tgUser = user;
     User.updateOne({ user_id: user.id }, { $set: { last_admin_active: new Date() } }).catch(() => {});
     next();
 };
@@ -1520,104 +1608,142 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
         }
     })();
 });
+app.get('/api/admin/spin-economy/stats', validateAdmin, async (req, res) => {
+    try {
+        const econ = await getSpinEconomy();
+        const expectedSoFar = econ.targetUsdtPerSpin * econ.totalSpins;
+        res.json({
+            success: true,
+            totalSpins: econ.totalSpins,
+            totalUsdtAwarded: econ.totalUsdtAwarded,
+            totalDashAwarded: econ.totalDashAwarded,
+            targetUsdtPerSpin: econ.targetUsdtPerSpin,
+            expectedUsdtSoFar: expectedSoFar,
+            payoutRatio: expectedSoFar > 0 ? (econ.totalUsdtAwarded / expectedSoFar) : null,
+            currentUsdtProbabilityMass: computeUsdtProbabilityMass(econ),
+            minUsdtProbability: econ.minUsdtProbability,
+            maxUsdtProbability: econ.maxUsdtProbability
+        });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+app.post('/api/admin/spin-economy/config', validateAdmin, async (req, res) => {
+    try {
+        const { targetUsdtPerSpin, minUsdtProbability, maxUsdtProbability } = req.body;
+        const updates = {};
+        if (targetUsdtPerSpin   !== undefined) updates.targetUsdtPerSpin   = Number(targetUsdtPerSpin);
+        if (minUsdtProbability  !== undefined) updates.minUsdtProbability  = Number(minUsdtProbability);
+        if (maxUsdtProbability  !== undefined) updates.maxUsdtProbability  = Number(maxUsdtProbability);
+
+        await SpinEconomy.updateOne({ key: 'global' }, { $set: { ...updates, updatedAt: new Date() } }, { upsert: true });
+        await logAdminAction(req.adminUser, 'spin_economy_updated', `Updated: ${Object.keys(updates).join(', ')}`);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
 app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
-        const user = await User.findOne({ user_id: userId });
 
-        if (!user) {
-            return res.status(404).json({ success: false, error: "User not found." });
-        }
+        // 1. ATOMIC ticket deduction — closes the double-spend race condition.
+        const userAfterDeduction = await User.findOneAndUpdate(
+            { user_id: userId, coins: { $gte: 1 } },
+            { $inc: { coins: -1 } },
+            { new: true }
+        );
 
-        // Check ticket balance (coins field)
-        if ((user.coins || 0) < 1) {
+        if (!userAfterDeduction) {
+            const exists = await User.exists({ user_id: userId });
+            if (!exists) return res.status(404).json({ success: false, error: "User not found." });
             return res.status(400).json({ success: false, error: "Not enough tickets. 1 TICKET required per spin." });
         }
-
-        // Deduct 1 ticket immediately
-        user.coins = (user.coins || 0) - 1;
-
-        // Probability table (weights must sum to 1.0)
-        const probabilities = [
-            { index: 0, weight: 0.08 },  // 0.07 USDT
-            { index: 1, weight: 0.12 },  // 50 DASH
-            { index: 2, weight: 0.07 },  // 0.05 USDT
-            { index: 3, weight: 0.18 },  // TRY AGAIN
-            { index: 4, weight: 0.05 },  // 0.1 USDT
-            { index: 5, weight: 0.10 },  // 1 TICKET
-            { index: 6, weight: 0.18 },  // TRY AGAIN
-            { index: 7, weight: 0.02 },  // JACKPOT
-            { index: 8, weight: 0.15 },  // 0.01 USDT
-            { index: 9, weight: 0.05 },  // 25 DASH
-        ];
-        // Total = 1.00
-
-        // RNG roll
-        const roll = Math.random();
-        let sum = 0;
-        let winningIndex = 3; // default TRY AGAIN
-
-        for (const slot of probabilities) {
-            sum += slot.weight;
-            if (roll <= sum) {
-                winningIndex = slot.index;
-                break;
-            }
+        if (userAfterDeduction.is_banned) {
+            await User.updateOne({ user_id: userId }, { $inc: { coins: 1 } }); // refund the ticket
+            return res.status(403).json({ success: false, error: "Account is banned." });
         }
 
-        // Apply reward
+        // 2. Live pacing read + new-user nudge
+        const econ = await getSpinEconomy();
+        let usdtProbabilityMass = computeUsdtProbabilityMass(econ);
+        usdtProbabilityMass = applyNewUserBonus(usdtProbabilityMass, userAfterDeduction.totalSpins || 0, econ.maxUsdtProbability);
+
+        // 3. Pick pool, then index within pool
+        const useUsdtPool = Math.random() < usdtProbabilityMass;
+        const winningIndex = useUsdtPool ? pickWeightedIndex(BASE_USDT_WEIGHTS) : pickWeightedIndex(BASE_OTHER_WEIGHTS);
+
+        // 4. Resolve reward
+        const baseReward = SPIN_REWARD_AMOUNTS[winningIndex];
+        let rewardType = baseReward.type;
+        let rewardAmount = baseReward.amount;
         let rewardMessage = "Try Again";
 
-        switch (winningIndex) {
-            case 0: // 0.07 USDT
-                user.points = (user.points || 0) + 0.07;
-                rewardMessage = "+0.07 USDT";
-                break;
-            case 1: // 50 DASH
-                user.balance = (user.balance || 0) + 50;
-                rewardMessage = "+50 DASH";
-                break;
-            case 2: // 0.05 USDT
-                user.points = (user.points || 0) + 0.05;
-                rewardMessage = "+0.05 USDT";
-                break;
-            case 3: // TRY AGAIN
-                rewardMessage = "Try Again";
-                break;
-            case 4: // 0.1 USDT
-                user.points = (user.points || 0) + 0.1;
-                rewardMessage = "+0.1 USDT";
-                break;
-            case 5: // 1 TICKET (refund basically)
-                user.coins = (user.coins || 0) + 1;
-                rewardMessage = "+1 TICKET";
-                break;
-            case 6: // TRY AGAIN
-                rewardMessage = "Try Again";
-                break;
-            case 7: // JACKPOT 500 DASH
-                user.balance = (user.balance || 0) + 500;
-                rewardMessage = "+500 DASH JACKPOT!";
-                break;
-            case 8: // 0.01 USDT
-                user.points = (user.points || 0) + 0.01;
-                rewardMessage = "+0.01 USDT";
-                break;
-            case 9: // 25 DASH
-                user.balance = (user.balance || 0) + 25;
-                rewardMessage = "+25 DASH";
-                break;
+        if (rewardType === 'jackpot') {
+            const flavor = JACKPOT_FLAVORS[Math.floor(Math.random() * JACKPOT_FLAVORS.length)];
+            rewardType = flavor.type;
+            rewardAmount = flavor.amount;
         }
 
-        await user.save();
+        const userUpdate = { $inc: { totalSpins: 1 }, $set: { lastSpinAt: new Date() } };
+        if (!userAfterDeduction.firstSpinAt) userUpdate.$set.firstSpinAt = new Date();
+
+        switch (rewardType) {
+            case 'usdt':
+                userUpdate.$inc.points = rewardAmount;
+                userUpdate.$inc.totalUsdtWonFromSpins = rewardAmount;
+                rewardMessage = `+${rewardAmount} USDT`;
+                break;
+            case 'dash':
+                userUpdate.$inc.balance = rewardAmount;
+                rewardMessage = `+${rewardAmount} DASH`;
+                break;
+            case 'ticket':
+                userUpdate.$inc.coins = rewardAmount;
+                rewardMessage = `+${rewardAmount} TICKET`;
+                break;
+            case 'jackpot_usdt':
+                userUpdate.$inc.points = rewardAmount;
+                userUpdate.$inc.totalUsdtWonFromSpins = rewardAmount;
+                rewardMessage = `+${rewardAmount} USDT JACKPOT!`;
+                break;
+            case 'jackpot_dash':
+                userUpdate.$inc.balance = rewardAmount;
+                rewardMessage = `+${rewardAmount} DASH JACKPOT!`;
+                break;
+            case 'jackpot_ticket':
+                userUpdate.$inc.coins = rewardAmount;
+                rewardMessage = `+${rewardAmount} TICKET JACKPOT!`;
+                break;
+            default:
+                rewardMessage = "Try Again";
+        }
+
+        const updatedUser = await User.findOneAndUpdate({ user_id: userId }, userUpdate, { new: true });
+
+        // 5. Update global ledger (fire-and-forget — fine, see scaling notes)
+        const usdtAwardedThisSpin = (rewardType === 'usdt' || rewardType === 'jackpot_usdt') ? rewardAmount : 0;
+        const dashAwardedThisSpin = (rewardType === 'dash' || rewardType === 'jackpot_dash') ? rewardAmount : 0;
+
+        SpinEconomy.updateOne(
+            { key: 'global' },
+            { $inc: { totalSpins: 1, totalUsdtAwarded: usdtAwardedThisSpin, totalDashAwarded: dashAwardedThisSpin }, $set: { updatedAt: new Date() } }
+        ).catch(e => console.error('SpinEconomy update failed:', e.message));
+
+        // 6. Audit log
+        SpinLog.create({
+            userId, winningIndex, rewardType, rewardAmount,
+            ticketCost: 1,
+            usdtProbabilityUsed: usdtProbabilityMass,
+            isNewUserBonus: (userAfterDeduction.totalSpins || 0) < 5
+        }).catch(e => console.error('SpinLog write failed:', e.message));
 
         return res.json({
             success: true,
             winningIndex,
+            rewardType,
+            rewardAmount,
             rewardNotificationString: rewardMessage,
-            newCoinBalance:   parseInt(user.coins   || 0),  // TICKETS
-            newPointBalance:  parseFloat(user.points || 0), // USDT
-            newWalletBalance: parseFloat(user.balance || 0) // DASH
+            newCoinBalance:   parseInt(updatedUser.coins   || 0),
+            newPointBalance:  parseFloat(updatedUser.points || 0),
+            newWalletBalance: parseFloat(updatedUser.balance || 0)
         });
 
     } catch (err) {
