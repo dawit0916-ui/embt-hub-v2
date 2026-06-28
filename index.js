@@ -417,8 +417,9 @@ const validateInitData = (req, res, next) => {
         return res.status(403).json({ error: "Signature hash mismatch or expired session state." });
     }
 
+    // REPLACE WITH:
     req.tgUser = user;
-    return next();
+    return ipGuardMiddleware(req, res, next);
 };
 
 const validateAdmin = async (req, res, next) => {
@@ -509,7 +510,64 @@ try {
         ...ARCHITECTURAL_MAINTENANCE_CONFIG.metadata
     });
 }
+// ── IP GUARD: Track IP → userId, ban on multi-account ──────────────────────
+const ipUserMap = {}; // { ip: Set<userId> }
 
+function getClientIP(req) {
+    return (
+        req.headers['x-forwarded-for']?.split(',')[0].trim() ||
+        req.headers['x-real-ip'] ||
+        req.socket?.remoteAddress ||
+        'unknown'
+    );
+}
+
+function ipGuardMiddleware(req, res, next) {
+    if (!req.tgUser) return next(); // not yet authenticated
+
+    const ip = getClientIP(req);
+    const userId = req.tgUser.id;
+
+    // Check if user is banned in DB (handled separately per-request)
+    // Check IP-level multi-account
+    if (!ipUserMap[ip]) ipUserMap[ip] = new Set();
+
+    const knownUsers = ipUserMap[ip];
+
+    if (!knownUsers.has(userId) && knownUsers.size >= 1) {
+        // New userId on an IP that already has a different user — ban both
+        const existingUsers = [...knownUsers];
+
+        console.warn(`[IP Guard] Multi-account detected: IP ${ip} → users ${existingUsers.join(', ')} + ${userId}`);
+
+        // Ban the new user and log async (don't await to avoid blocking)
+        (async () => {
+            try {
+                await User.updateMany(
+                    { user_id: { $in: [...existingUsers, userId] } },
+                    { $set: { is_banned: true } }
+                );
+                await AdminActivity.create({
+                    admin_id: 0,
+                    admin_name: 'IP Guard (Auto)',
+                    action: 'multi_account_ban',
+                    description: `IP ${ip} used by multiple accounts: ${[...existingUsers, userId].join(', ')}`
+                });
+            } catch (e) {
+                console.error('[IP Guard] DB write error:', e.message);
+            }
+        })();
+
+        return res.status(403).json({
+            error: 'multi_account_detected',
+            banned: true,
+            message: `Self referral detected: IP matches with ${existingUsers[0]}`
+        });
+    }
+
+    knownUsers.add(userId);
+    next();
+}
 // --- GHOST VALIDATOR ENGINE ---
 async function runGhostValidator(ctx) {
     try {
