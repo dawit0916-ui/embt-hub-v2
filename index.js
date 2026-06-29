@@ -510,8 +510,10 @@ try {
         ...ARCHITECTURAL_MAINTENANCE_CONFIG.metadata
     });
 }
-// ── IP GUARD: Track IP → userId, ban on multi-account ──────────────────────
-const ipUserMap = {}; // { ip: Set<userId> }
+// ── IP GUARD: Strike system ─────────────────────────────────────────────────
+const ipUserMap = {};      // { ip: Set<userId> }
+const inviterStrikes = {}; // { inviterId: strikeCount }
+const STRIKE_LIMIT = 5;
 
 function getClientIP(req) {
     return (
@@ -523,48 +525,88 @@ function getClientIP(req) {
 }
 
 function ipGuardMiddleware(req, res, next) {
-    if (!req.tgUser) return next(); // not yet authenticated
+    if (!req.tgUser) return next();
 
     const ip = getClientIP(req);
     const userId = req.tgUser.id;
 
-    // Check if user is banned in DB (handled separately per-request)
-    // Check IP-level multi-account
     if (!ipUserMap[ip]) ipUserMap[ip] = new Set();
-
     const knownUsers = ipUserMap[ip];
 
-    if (!knownUsers.has(userId) && knownUsers.size >= 1) {
-        // New userId on an IP that already has a different user — ban both
-        const existingUsers = [...knownUsers];
+    // Same user returning — no issue
+    if (knownUsers.has(userId)) return next();
 
-        console.warn(`[IP Guard] Multi-account detected: IP ${ip} → users ${existingUsers.join(', ')} + ${userId}`);
+    if (knownUsers.size >= 1) {
+        // New userId on a known IP — this is the invited/duplicate account
+        const existingUserId = [...knownUsers][0];
 
-        // Ban the new user and log async (don't await to avoid blocking)
+        console.warn(`[IP Guard] Duplicate IP: ${ip} → existing: ${existingUserId}, new: ${userId}`);
+
         (async () => {
             try {
-                await User.updateMany(
-                    { user_id: { $in: [...existingUsers, userId] } },
+                // 1. Ban the NEW (invited) account only
+                await User.updateOne(
+                    { user_id: userId },
                     { $set: { is_banned: true } }
                 );
+
+                // 2. Find who invited the new account
+                const newUser = await User.findOne({ user_id: userId }).lean();
+                const inviterId = newUser?.referred_by;
+
+                // 3. Strike the inviter if they referred this banned account
+                if (inviterId) {
+                    if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
+                    inviterStrikes[inviterId]++;
+
+                    const strikes = inviterStrikes[inviterId];
+                    console.warn(`[IP Guard] Inviter ${inviterId} now has ${strikes} strike(s)`);
+
+                    if (strikes >= STRIKE_LIMIT) {
+                        // Ban the inviter
+                        await User.updateOne(
+                            { user_id: inviterId },
+                            { $set: { is_banned: true } }
+                        );
+                        await AdminActivity.create({
+                            admin_id: 0,
+                            admin_name: 'IP Guard (Auto)',
+                            action: 'inviter_banned',
+                            description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes. Last IP: ${ip}`
+                        });
+                        console.warn(`[IP Guard] Inviter ${inviterId} BANNED after ${STRIKE_LIMIT} strikes`);
+                    } else {
+                        // Log the strike
+                        await AdminActivity.create({
+                            admin_id: 0,
+                            admin_name: 'IP Guard (Auto)',
+                            action: 'inviter_strike',
+                            description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}. Banned account: ${userId} on IP: ${ip}`
+                        });
+                    }
+                }
+
+                // 4. Log the banned invited account
                 await AdminActivity.create({
                     admin_id: 0,
                     admin_name: 'IP Guard (Auto)',
-                    action: 'multi_account_ban',
-                    description: `IP ${ip} used by multiple accounts: ${[...existingUsers, userId].join(', ')}`
+                    action: 'invited_account_banned',
+                    description: `Banned duplicate account ${userId} on IP ${ip}. Original user: ${existingUserId}`
                 });
+
             } catch (e) {
-                console.error('[IP Guard] DB write error:', e.message);
+                console.error('[IP Guard] DB error:', e.message);
             }
         })();
 
         return res.status(403).json({
             error: 'multi_account_detected',
             banned: true,
-            message: `Self referral detected: IP matches with ${existingUsers[0]}`
+            message: `Self referral detected: IP matches with ${existingUserId}`
         });
     }
 
+    // First user on this IP — register them
     knownUsers.add(userId);
     next();
 }
@@ -754,7 +796,10 @@ app.get('/api/admin/stats', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message }); 
     }
 });
-
+app.get('/api/admin/user-strikes/:userId', validateAdmin, async (req, res) => {
+    const uid = parseInt(req.params.userId);
+    res.json({ userId: uid, strikes: inviterStrikes[uid] || 0 });
+});
 app.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
         // 1. TRUST THE MIDDLEWARE: validateInitData has already cryptographically verified the user
