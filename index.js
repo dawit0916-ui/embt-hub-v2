@@ -39,6 +39,7 @@ const User = mongoose.model('User', new mongoose.Schema({
     is_banned: { type: Boolean, default: false },
     last_admin_active: { type: Date, default: null },
     totalSpins: { type: Number, default: 0 },
+    whitelisted: { type: Boolean, default: false },
     totalUsdtWonFromSpins: { type: Number, default: 0 },
     firstSpinAt: { type: Date, default: null },
     lastSpinAt: { type: Date, default: null },
@@ -463,7 +464,7 @@ const ARCHITECTURAL_MAINTENANCE_CONFIG = {
     }
 };
 
-function enforceGlobalMaintenanceGate(req, res, next) {
+async function enforceGlobalMaintenanceGate(req, res, next) {
     // 1. If maintenance mode is disabled in environment settings, pass control to next handler instantly
     if (!ARCHITECTURAL_MAINTENANCE_CONFIG.enabled) {
         return next();
@@ -502,7 +503,14 @@ try {
         console.log(`[Maintenance Bypass] Authorized access permitted for tester: ${extractedTelegramId}`);
         return next();
     }
-
+     // Inside enforceGlobalMaintenanceGate, after the tester bypass check, add:
+if (extractedTelegramId) {
+    const userDoc = await User.findOne({ user_id: extractedTelegramId }).select('whitelisted').lean();
+    if (userDoc?.whitelisted) {
+        console.log(`[Maintenance Bypass] Whitelisted user permitted: ${extractedTelegramId}`);
+        return next();
+    }
+}
     // 4. Reject all standard users with an HTTP 503 containing telemetry properties
     return res.status(503).json({
         maintenance: true,
@@ -533,67 +541,60 @@ function ipGuardMiddleware(req, res, next) {
     if (!ipUserMap[ip]) ipUserMap[ip] = new Set();
     const knownUsers = ipUserMap[ip];
 
-    // Same user returning — no issue
     if (knownUsers.has(userId)) return next();
 
     if (knownUsers.size >= 1) {
-        // New userId on a known IP — this is the invited/duplicate account
         const existingUserId = [...knownUsers][0];
 
-        console.warn(`[IP Guard] Duplicate IP: ${ip} → existing: ${existingUserId}, new: ${userId}`);
-
+        // ── WHITELIST BYPASS ──
         (async () => {
             try {
-                // 1. Ban the NEW (invited) account only
-                await User.updateOne(
-                    { user_id: userId },
-                    { $set: { is_banned: true } }
-                );
+                const [newUserDoc, existingUserDoc] = await Promise.all([
+                    User.findOne({ user_id: userId }).select('whitelisted referred_by').lean(),
+                    User.findOne({ user_id: existingUserId }).select('whitelisted').lean()
+                ]);
 
-                // 2. Find who invited the new account
-                const newUser = await User.findOne({ user_id: userId }).lean();
-                const inviterId = newUser?.referred_by;
+                if (newUserDoc?.whitelisted || existingUserDoc?.whitelisted) {
+                    console.log(`[IP Guard] Bypassed — whitelisted user involved (${userId} or ${existingUserId})`);
+                    knownUsers.add(userId);
+                    return next();
+                }
 
-                // 3. Strike the inviter if they referred this banned account
+                // Not whitelisted — proceed with normal ban flow
+                await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
+
+                const inviterId = newUserDoc?.referred_by;
                 if (inviterId) {
-                    if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
-                    inviterStrikes[inviterId]++;
-
-                    const strikes = inviterStrikes[inviterId];
-                    console.warn(`[IP Guard] Inviter ${inviterId} now has ${strikes} strike(s)`);
-
-                    if (strikes >= STRIKE_LIMIT) {
-                        // Ban the inviter
-                        await User.updateOne(
-                            { user_id: inviterId },
-                            { $set: { is_banned: true } }
-                        );
-                        await AdminActivity.create({
-                            admin_id: 0,
-                            admin_name: 'IP Guard (Auto)',
-                            action: 'inviter_banned',
-                            description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes. Last IP: ${ip}`
-                        });
-                        console.warn(`[IP Guard] Inviter ${inviterId} BANNED after ${STRIKE_LIMIT} strikes`);
+                    const inviterDoc = await User.findOne({ user_id: inviterId }).select('whitelisted').lean();
+                    if (inviterDoc?.whitelisted) {
+                        console.log(`[IP Guard] Inviter ${inviterId} is whitelisted — no strike issued`);
                     } else {
-                        // Log the strike
-                        await AdminActivity.create({
-                            admin_id: 0,
-                            admin_name: 'IP Guard (Auto)',
-                            action: 'inviter_strike',
-                            description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}. Banned account: ${userId} on IP: ${ip}`
-                        });
+                        if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
+                        inviterStrikes[inviterId]++;
+                        const strikes = inviterStrikes[inviterId];
+
+                        if (strikes >= STRIKE_LIMIT) {
+                            await User.updateOne({ user_id: inviterId }, { $set: { is_banned: true } });
+                            await AdminActivity.create({
+                                admin_id: 0, admin_name: 'IP Guard (Auto)',
+                                action: 'inviter_banned',
+                                description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes. Last IP: ${ip}`
+                            });
+                        } else {
+                            await AdminActivity.create({
+                                admin_id: 0, admin_name: 'IP Guard (Auto)',
+                                action: 'inviter_strike',
+                                description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}. Banned account: ${userId} on IP: ${ip}`
+                            });
+                        }
                     }
                 }
 
-                // 4. Log the banned invited account
                 await AdminActivity.create({
-                    admin_id: 0,
-                    admin_name: 'IP Guard (Auto)',
+                    admin_id: 0, admin_name: 'IP Guard (Auto)',
                     action: 'invited_account_banned',
                     description: `Banned duplicate account ${userId} on IP ${ip}. Original user: ${existingUserId}`
                 });
-
             } catch (e) {
                 console.error('[IP Guard] DB error:', e.message);
             }
@@ -606,7 +607,6 @@ function ipGuardMiddleware(req, res, next) {
         });
     }
 
-    // First user on this IP — register them
     knownUsers.add(userId);
     next();
 }
@@ -799,6 +799,38 @@ app.get('/api/admin/stats', validateAdmin, async (req, res) => {
 app.get('/api/admin/user-strikes/:userId', validateAdmin, async (req, res) => {
     const uid = parseInt(req.params.userId);
     res.json({ userId: uid, strikes: inviterStrikes[uid] || 0 });
+});
+// Toggle whitelist status for a user
+app.post('/api/admin/user/whitelist', validateAdmin, async (req, res) => {
+    try {
+        const { userId, whitelisted } = req.body;
+        if (!userId) return res.status(400).json({ error: "User ID required." });
+
+        const updatedUser = await User.findOneAndUpdate(
+            { user_id: Number(userId) },
+            { $set: { whitelisted: Boolean(whitelisted) } },
+            { new: true }
+        );
+
+        if (!updatedUser) return res.status(404).json({ error: "User not found." });
+        await logAdminAction(req.adminUser, whitelisted ? 'user_whitelisted' : 'user_unwhitelisted', `User ${userId}`);
+
+        return res.json({ success: true, whitelisted: updatedUser.whitelisted });
+    } catch (err) {
+        res.status(500).json({ error: "Failed to update whitelist status." });
+    }
+});
+
+// List all whitelisted users
+app.get('/api/admin/whitelist', validateAdmin, async (req, res) => {
+    try {
+        const users = await User.find({ whitelisted: true })
+            .select('user_id username first_name')
+            .lean();
+        res.json({ success: true, users });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 app.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
@@ -1226,6 +1258,7 @@ app.get('/api/admin/users', validateAdmin, async (req, res) => {
                 balance: u.balance || 0,
                 points: u.points || 0,
                 coins: u.coins || 0,
+                whitelisted: u.whitelisted || false,
                 total_earned: u.total_earned || 0,
                 referralCount: u.referralCount || 0,
                 tasksCompleted: u.completed_tasks ? u.completed_tasks.length : 0,
