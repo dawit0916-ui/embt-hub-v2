@@ -229,7 +229,21 @@ const SpinLogSchema = new mongoose.Schema({
 });
 const SpinLog = mongoose.models.SpinLog || mongoose.model('SpinLog', SpinLogSchema);
 
+const ReminderConfig = mongoose.model('ReminderConfig', new mongoose.Schema({
+    reminder_enabled: { type: Boolean, default: true },
+    reminder_image_message_id: { type: Number, default: null },
+    reminder_image_file_id: { type: String, default: null },
+    last_updated: { type: Date, default: Date.now }
+}));
 
+const UserReminder = mongoose.model('UserReminder', new mongoose.Schema({
+    user_id: { type: Number, required: true, index: true },
+    last_reminder_sent: { type: Date, default: null },
+    welcome_message_deleted: { type: Boolean, default: false },
+    deleted_at: { type: Date, default: null },
+    reminder_count: { type: Number, default: 0 },
+    createdAt: { type: Date, default: Date.now }
+}));
 async function logAdminAction(adminUser, action, description) {
     try {
         await AdminActivity.create({
@@ -656,7 +670,91 @@ async function runGhostValidator(ctx) {
         if (ctx) await ctx.reply("❌ The validator encountered a critical error during the sweep.");
     }
 }
+async function getReminderConfig() {
+    let config = await ReminderConfig.findOne();
+    if (!config) {
+        config = await ReminderConfig.create({
+            reminder_enabled: true,
+            reminder_image_message_id: null,
+            reminder_image_file_id: null
+        });
+    }
+    return config;
+}
 
+async function sendReminderMessage(userId) {
+    try {
+        const config = await getReminderConfig();
+        if (!config.reminder_enabled || !config.reminder_image_file_id) {
+            console.warn(`[Reminder] Config missing for user ${userId}`);
+            return false;
+        }
+
+        const reminderText = `🔔 *You're Missing Out!*\n\nHey! Get back to earning with EMBT. Tap the button below to continue 🚀`;
+
+        await bot.telegram.sendPhoto(
+            userId,
+            config.reminder_image_file_id,
+            {
+                caption: reminderText,
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[
+                        {
+                            text: '▶️ Start Earning',
+                            callback_data: 'start_bot_reminder'
+                        }
+                    ]]
+                }
+            }
+        );
+
+        await UserReminder.updateOne(
+            { user_id: userId },
+            {
+                $set: { 
+                    last_reminder_sent: new Date(),
+                    welcome_message_deleted: false 
+                },
+                $inc: { reminder_count: 1 }
+            },
+            { upsert: true }
+        );
+
+        return true;
+    } catch (err) {
+        console.error(`[Reminder Send Error] User ${userId}:`, err.message);
+        return false;
+    }
+}
+
+async function checkAndSendReminders() {
+    try {
+        const now = new Date();
+        const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+
+        // Find users with deleted welcome messages who haven't gotten a reminder in 6 hours
+        const usersNeedingReminder = await UserReminder.find({
+            welcome_message_deleted: true,
+            $or: [
+                { last_reminder_sent: null },
+                { last_reminder_sent: { $lt: sixHoursAgo } }
+            ]
+        });
+
+        console.log(`[Reminder Check] Found ${usersNeedingReminder.length} users needing reminders`);
+
+        for (const reminder of usersNeedingReminder) {
+            const sent = await sendReminderMessage(reminder.user_id);
+            if (sent) {
+                await new Promise(resolve => setTimeout(resolve, 100)); // Rate limiting
+            }
+        }
+
+    } catch (err) {
+        console.error('[Reminder Check Error]:', err.message);
+    }
+}
 // --- TELEGRAM BOT HANDLERS ---
 bot.start(async (ctx) => {
     const referrerId = ctx.startPayload;
@@ -690,9 +788,17 @@ bot.start(async (ctx) => {
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]]) }
         );
 
+        // Track both message IDs for cleanup
         await User.updateOne(
             { user_id: userId },
             { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, sentMsg.message_id] } } }
+        );
+
+        // Initialize reminder tracking
+        await UserReminder.updateOne(
+            { user_id: userId },
+            { $set: { welcome_message_deleted: false, deleted_at: null } },
+            { upsert: true }
         );
 
     } catch (error) {
@@ -700,7 +806,62 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
+// Monitor when messages are deleted in DMs
+bot.on('message_edit', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const msgId = ctx.message.message_id;
 
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return;
+
+        // Check if this is the welcome message being deleted
+        if (user.pending_message_cleanup && user.pending_message_cleanup.includes(msgId)) {
+            console.log(`[Delete Monitor] Welcome message deleted for user ${userId}`);
+
+            // Mark user as needing reminders
+            await UserReminder.updateOne(
+                { user_id: userId },
+                {
+                    $set: {
+                        welcome_message_deleted: true,
+                        deleted_at: new Date(),
+                        last_reminder_sent: null
+                    }
+                },
+                { upsert: true }
+            );
+        }
+    } catch (err) {
+        console.error('[Delete Monitor Error]:', err.message);
+    }
+});
+
+// Inline button handler for reminder start button
+bot.action('start_bot_reminder', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app';
+
+        await ctx.answerCallbackQuery('Opening app... 🚀', { show_alert: false });
+        
+        // Update reminder - they clicked so they're re-engaged
+        await UserReminder.updateOne(
+            { user_id: userId },
+            { $set: { welcome_message_deleted: false } }
+        );
+
+        await ctx.reply(
+            `👋 Welcome back to EMBT!\n\nTap below to continue earning:`,
+            { 
+                parse_mode: 'Markdown',
+                ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]])
+            }
+        );
+    } catch (err) {
+        console.error('[Reminder Button Error]:', err.message);
+    }
+});
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
 // ==========================================================================
@@ -820,7 +981,106 @@ app.post('/api/admin/user/whitelist', validateAdmin, async (req, res) => {
         res.status(500).json({ error: "Failed to update whitelist status." });
     }
 });
+// Upload reminder image to private channel and save file_id
+app.post('/api/admin/reminder-config', validateAdmin, async (req, res) => {
+    try {
+        if (!STORAGE_CHANNEL_ID) {
+            return res.status(400).json({ error: "STORAGE_CHANNEL_ID not configured" });
+        }
 
+        const caption = `🔔 REMINDER IMAGE - Do not delete`;
+        
+        // If body has base64 image
+        if (req.body.imageBase64) {
+            const base64Data = req.body.imageBase64.replace(/^data:image\/\w+;base64,/, '');
+            const buffer = Buffer.from(base64Data, 'base64');
+
+            const msg = await bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, { source: buffer }, { caption });
+            
+            await ReminderConfig.updateOne(
+                {},
+                {
+                    $set: {
+                        reminder_image_message_id: msg.message_id,
+                        reminder_image_file_id: msg.photo[msg.photo.length - 1].file_id,
+                        last_updated: new Date()
+                    }
+                },
+                { upsert: true }
+            );
+
+            await logAdminAction(req.adminUser, 'reminder_image_updated', 'Updated reminder image');
+
+            return res.json({
+                success: true,
+                message: "Reminder image uploaded successfully",
+                messageId: msg.message_id,
+                fileId: msg.photo[msg.photo.length - 1].file_id
+            });
+        }
+
+        return res.status(400).json({ error: "No image provided" });
+
+    } catch (err) {
+        console.error('[Reminder Config Error]:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Get reminder config status
+app.get('/api/admin/reminder-config', validateAdmin, async (req, res) => {
+    try {
+        const config = await getReminderConfig();
+        res.json({
+            success: true,
+            enabled: config.reminder_enabled,
+            has_image: !!config.reminder_image_file_id,
+            message_id: config.reminder_image_message_id,
+            last_updated: config.last_updated
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Toggle reminders on/off
+app.post('/api/admin/reminder-config/toggle', validateAdmin, async (req, res) => {
+    try {
+        const { enabled } = req.body;
+        await ReminderConfig.updateOne(
+            {},
+            { $set: { reminder_enabled: Boolean(enabled) } },
+            { upsert: true }
+        );
+        await logAdminAction(req.adminUser, 'reminders_toggled', `Reminders ${enabled ? 'enabled' : 'disabled'}`);
+        res.json({ success: true, enabled: Boolean(enabled) });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Get reminder statistics
+app.get('/api/admin/reminder-stats', validateAdmin, async (req, res) => {
+    try {
+        const totalUsersWithDeletedWelcome = await UserReminder.countDocuments({ welcome_message_deleted: true });
+        const recentReminders = await UserReminder.find({ last_reminder_sent: { $exists: true, $ne: null } })
+            .sort({ last_reminder_sent: -1 })
+            .limit(10)
+            .lean();
+
+        res.json({
+            success: true,
+            usersAwaitingReminder: totalUsersWithDeletedWelcome,
+            recentReminders: recentReminders.map(r => ({
+                user_id: r.user_id,
+                last_sent: r.last_reminder_sent,
+                count: r.reminder_count
+            }))
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 // List all whitelisted users
 app.get('/api/admin/whitelist', validateAdmin, async (req, res) => {
     try {
@@ -2617,14 +2877,25 @@ app.get('/api/secure/history', validateInitData, async (req, res) => {
         console.error("History fetch error:", err);
         return res.status(500).json({ error: "Failed to load history." });
     }
-});            
-// 🤖 Automated Background Worker Infrastructure Timer (24h loop)
+});  
+// 🤖 Reminder System Worker (Check every 30 minutes for reminders to send)
+setInterval(async () => {
+    try {
+        console.log("📢 Reminder system check cycle...");
+        await checkAndSendReminders();
+    } catch (err) {
+        console.error('[Reminder Worker Error]:', err.message);
+    }
+}, 30 * 60 * 1000); // Every 30 minutes
+
+// 🤖 Automated Background Validation (Keep your existing one)
 setInterval(async () => {
     try {
         console.log("🤖 System automated task audit pass sequence active...");
         await runGhostValidator(null); 
     } catch (err) { console.error("Worker lifecycle failure:", err); }
 }, 24 * 60 * 60 * 1000);
+
 
 bot.catch((err) => console.log(`⚠️ Telegraf Framework Core Event Loop Catch Error:`, err));
 process.on('unhandledRejection', (reason) => console.log('❌ Host Process Unhandled Rejection Fault:', reason));
