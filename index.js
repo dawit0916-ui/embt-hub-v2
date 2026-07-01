@@ -13,6 +13,43 @@ const ADMIN_ID = 7329000880;
 
 app.use(cors()); 
 app.use(express.json());
+app.get('/api/adsgram/reward-callback', async (req, res) => {
+    try {
+        const { userId, sessionId } = req.query;
+
+        // Verify the secret token AdsGram sends
+        const secret = req.query.secret || req.headers['x-adsgram-secret'];
+        if (secret !== process.env.ADSGRAM_SECRET) {
+            console.warn('[AdsGram S2S] Bad secret from IP:', req.ip);
+            return res.status(403).send('Forbidden');
+        }
+
+        if (!userId || !sessionId) {
+            return res.status(400).send('Missing params');
+        }
+
+        // In the S2S callback, find by userId + adId instead of sessionId
+const session = await AdWatch.findOne({
+    userId: Number(userId),
+    serverConfirmed: false,
+    claimed: false
+}).sort({ createdAt: -1 }); // most recent pending session
+        if (!session) {
+            // Already confirmed or session expired — return 200 so AdsGram doesn't retry
+            return res.status(200).send('ok');
+        }
+
+        session.serverConfirmed = true;
+        await session.save();
+
+        console.log(`[AdsGram S2S] Confirmed session ${sessionId} for user ${userId}`);
+        return res.status(200).send('ok');
+
+    } catch (err) {
+        console.error('[AdsGram S2S] Callback error:', err);
+        return res.status(500).send('error');
+    }
+});
 app.use('/api', enforceGlobalMaintenanceGate);
 
 // --- DATABASE SCHEMAS ---
@@ -154,13 +191,15 @@ const AdminActivity = mongoose.model('AdminActivity', new mongoose.Schema({
 // --- ADD AFTER YOUR EXISTING MODELS ---
 
 const AdWatch = mongoose.model('AdWatch', new mongoose.Schema({
-    userId: { type: Number, required: true, index: true },
-    adId: { type: String, required: true },
-    adNetwork: { type: String, enum: ['adgrams', 'google_ads'], required: true },
-    reward: { type: Number, required: true },
-    watched: { type: Boolean, default: false },
-    viewedAt: { type: Date, default: Date.now },
-    claimedAt: { type: Date, default: null }
+    sessionId:       { type: String, unique: true, required: true },
+    userId:          { type: Number, required: true, index: true },
+    adId:            { type: String, required: true },
+    adNetwork:       { type: String, default: 'adgrams' },
+    reward:          { type: Number, required: true },
+    serverConfirmed: { type: Boolean, default: false }, // set by S2S postback
+    clientDone:      { type: Boolean, default: false }, // set by browser
+    claimed:         { type: Boolean, default: false },
+    createdAt:       { type: Date, default: Date.now, expires: 600 } // auto-delete after 10 min
 }));
 
 const DailyTaskProgress = mongoose.model('DailyTaskProgress', new mongoose.Schema({
@@ -1464,7 +1503,100 @@ app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
         });
     }
 });
+app.post('/api/secure/ads/start-session', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { adId } = req.body;
+        if (!adId) return res.status(400).json({ error: 'adId required' });
 
+        const ad = await ActiveAd.findOne({ adId, enabled: true });
+        if (!ad) return res.status(404).json({ error: 'Ad not found' });
+
+        // Daily limit check
+        const today = new Date(); today.setHours(0,0,0,0);
+        const watchedToday = await AdWatch.countDocuments({
+            userId, adId, claimed: true,
+            createdAt: { $gte: today }
+        });
+        if (watchedToday >= ad.maxWatchesPerDay) {
+            return res.status(400).json({ error: 'Daily limit reached' });
+        }
+
+        const sessionId = crypto.randomBytes(16).toString('hex');
+
+        await AdWatch.create({
+            sessionId,
+            userId,
+            adId,
+            adNetwork: ad.network,
+            reward: ad.reward
+        });
+
+        return res.json({ success: true, sessionId });
+    } catch (err) {
+        console.error('Start ad session error:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+app.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { sessionId } = req.body;
+
+        if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+
+        const session = await AdWatch.findOne({
+            sessionId,
+            userId,
+            claimed: false
+        });
+
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found or already claimed' });
+        }
+
+        if (!session.serverConfirmed) {
+            // S2S ping hasn't arrived yet — tell frontend to retry
+            return res.status(202).json({
+                success: false,
+                pending: true,
+                error: 'Ad reward not yet confirmed by server. Please wait a moment.'
+            });
+        }
+
+        // All checks passed — credit reward
+        session.claimed = true;
+        await session.save();
+
+        const updatedUser = await User.findOneAndUpdate(
+            { user_id: userId },
+            {
+                $inc: { balance: session.reward, total_earned: session.reward },
+                $push: {
+                    history: {
+                        title: `Ad Watch Reward`,
+                        reward: session.reward,
+                        taskId: `ad_${session.adId}`,
+                        date: new Date()
+                    }
+                }
+            },
+            { new: true }
+        );
+
+        return res.json({
+            success: true,
+            reward: session.reward,
+            newBalance: updatedUser.balance,
+            newPoints: updatedUser.points,
+            newCoins: updatedUser.coins
+        });
+
+    } catch (err) {
+        console.error('Claim ad error:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
 // 📊 GET USER DIRECTORY (With Pagination, Search, and Status Filtering)
 app.get('/api/admin/users', validateAdmin, async (req, res) => {
     try {
