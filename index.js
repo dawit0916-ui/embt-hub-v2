@@ -858,37 +858,56 @@ bot.start(async (ctx) => {
     }
 });
 
-// Monitor when messages are deleted in DMs
-bot.on('message_edit', async (ctx) => {
+// 🔔 Reminder System Workers
+setInterval(async () => {
     try {
-        const userId = ctx.from.id;
-        const msgId = ctx.message.message_id;
-
-        const user = await User.findOne({ user_id: userId });
-        if (!user) return;
-
-        // Check if this is the welcome message being deleted
-        if (user.pending_message_cleanup && user.pending_message_cleanup.includes(msgId)) {
-            console.log(`[Delete Monitor] Welcome message deleted for user ${userId}`);
-
-            // Mark user as needing reminders
-            await UserReminder.updateOne(
-                { user_id: userId },
-                {
-                    $set: {
-                        welcome_message_deleted: true,
-                        deleted_at: new Date(),
-                        last_reminder_sent: null
-                    }
-                },
-                { upsert: true }
-            );
-        }
+        console.log("📢 Reminder system check cycle...");
+        await checkAndSendReminders();
     } catch (err) {
-        console.error('[Delete Monitor Error]:', err.message);
+        console.error('[Reminder Worker Error]:', err.message);
     }
-});
+}, 30 * 60 * 1000); // Every 30 minutes
 
+// 🔄 Check for deleted welcome messages
+setInterval(async () => {
+    try {
+        console.log("🔄 [Reminder Check] Checking for deleted welcome messages...");
+        
+        const users = await User.find({ 
+            pending_message_cleanup: { $exists: true, $ne: [] },
+            is_banned: false
+        }).lean();
+
+        for (const user of users) {
+            for (const msgId of user.pending_message_cleanup) {
+                try {
+                    await bot.telegram.getMessage(user.user_id, msgId);
+                } catch (err) {
+                    if (err.message.includes('not found')) {
+                        console.log(`[Reminder] Welcome message deleted for user ${user.user_id}`);
+                        
+                        await UserReminder.updateOne(
+                            { user_id: user.user_id },
+                            {
+                                $set: {
+                                    welcome_message_deleted: true,
+                                    deleted_at: new Date(),
+                                    last_reminder_sent: null
+                                }
+                            },
+                            { upsert: true }
+                        );
+                    }
+                }
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
+        
+        console.log("[Reminder Check] Deletion check complete");
+    } catch (err) {
+        console.error('[Welcome Message Checker Error]:', err.message);
+    }
+}, 5 * 60 * 1000); // Check every 5 minutes
 // Inline button handler for reminder start button
 bot.action('start_bot_reminder', async (ctx) => {
     try {
