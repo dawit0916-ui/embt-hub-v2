@@ -199,6 +199,7 @@ const AdWatch = mongoose.model('AdWatch', new mongoose.Schema({
     serverConfirmed: { type: Boolean, default: false }, // set by S2S postback
     clientDone:      { type: Boolean, default: false }, // set by browser
     claimed:         { type: Boolean, default: false },
+    blurDetected: { type: Boolean, default: false }, // audit only
     createdAt:       { type: Date, default: Date.now, expires: 600 } // auto-delete after 10 min
 }));
 
@@ -213,13 +214,14 @@ const DailyTaskProgress = mongoose.model('DailyTaskProgress', new mongoose.Schem
 
 // Track which ad units we're currently offering
 const ActiveAd = mongoose.model('ActiveAd', new mongoose.Schema({
-    adId: { type: String, unique: true, required: true },
-    network: { type: String, enum: ['adgrams', 'google_ads'] },
-    unitId: { type: String, required: true }, // AdMob Unit ID or AdGrams ID
-    reward: { type: Number, required: true },
-    maxWatchesPerDay: { type: Number, default: 2 },
-    enabled: { type: Boolean, default: true },
-    createdAt: { type: Date, default: Date.now }
+    adId:               { type: String, unique: true, required: true },
+    network:            { type: String, enum: ['adgrams', 'google_ads'] },
+    unitId:             { type: String, required: true },
+    reward:             { type: Number, required: true },        // DASH per view
+    resetIntervalHours: { type: Number, default: 24 },          // reset every N hours
+    watchesPerReset:    { type: Number, default: 2 },           // watches allowed per reset period
+    enabled:            { type: Boolean, default: true },
+    createdAt:          { type: Date, default: Date.now }
 }));
 
 const YoutubeTask = mongoose.model('YoutubeTask', new mongoose.Schema({
@@ -1512,18 +1514,27 @@ app.post('/api/secure/ads/start-session', validateInitData, async (req, res) => 
         const ad = await ActiveAd.findOne({ adId, enabled: true });
         if (!ad) return res.status(404).json({ error: 'Ad not found' });
 
-        // Daily limit check
-        const today = new Date(); today.setHours(0,0,0,0);
-        const watchedToday = await AdWatch.countDocuments({
-            userId, adId, claimed: true,
-            createdAt: { $gte: today }
+        // Use dynamic reset interval
+        const periodStart    = getResetPeriodStart(ad.resetIntervalHours || 24);
+        const watchesPerReset = ad.watchesPerReset || 2;
+
+        const watchedThisPeriod = await AdWatch.countDocuments({
+            userId,
+            adId,
+            claimed: true,
+            createdAt: { $gte: periodStart }
         });
-        if (watchedToday >= ad.maxWatchesPerDay) {
-            return res.status(400).json({ error: 'Daily limit reached' });
+
+        if (watchedThisPeriod >= watchesPerReset) {
+            const nextReset = new Date(periodStart);
+            nextReset.setUTCHours(nextReset.getUTCHours() + (ad.resetIntervalHours || 24));
+            return res.status(400).json({
+                error: 'Limit reached for this period.',
+                nextReset: nextReset.toISOString()
+            });
         }
 
         const sessionId = crypto.randomBytes(16).toString('hex');
-
         await AdWatch.create({
             sessionId,
             userId,
@@ -2343,34 +2354,79 @@ app.get('/api/admin/registry', validateAdmin, async (req, res) => {
 // ==========================================================================
 // WATCH & EARN SYSTEM ENDPOINTS
 // ==========================================================================
+// GET all ads for admin panel
+app.get('/api/admin/ads', validateAdmin, async (req, res) => {
+    try {
+        const ads = await ActiveAd.find().sort({ createdAt: -1 }).lean();
+        res.json({ success: true, ads });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
+// UPDATE ad settings dynamically
+app.post('/api/admin/ads/update', validateAdmin, async (req, res) => {
+    try {
+        const { adId, reward, resetIntervalHours, watchesPerReset, enabled } = req.body;
+        if (!adId) return res.status(400).json({ error: 'adId required' });
+
+        const updates = {};
+        if (reward             !== undefined) updates.reward             = parseFloat(reward);
+        if (resetIntervalHours !== undefined) updates.resetIntervalHours = parseInt(resetIntervalHours);
+        if (watchesPerReset    !== undefined) updates.watchesPerReset    = parseInt(watchesPerReset);
+        if (enabled            !== undefined) updates.enabled            = Boolean(enabled);
+
+        const ad = await ActiveAd.findOneAndUpdate(
+            { adId },
+            { $set: updates },
+            { new: true }
+        );
+
+        if (!ad) return res.status(404).json({ error: 'Ad not found' });
+
+        await logAdminAction(req.adminUser, 'ad_updated',
+            `Updated ad ${adId}: ${JSON.stringify(updates)}`
+        );
+
+        res.json({ success: true, ad });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 // Get available ads for user (max 2 per day)
 app.get('/api/secure/available-ads', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
         const allAds = await ActiveAd.find({ enabled: true });
 
         const adsWithStatus = await Promise.all(
             allAds.map(async (ad) => {
-                const watchedToday = await AdWatch.countDocuments({
+                const resetIntervalHours = ad.resetIntervalHours || 24;
+                const watchesPerReset    = ad.watchesPerReset    || 2;
+
+                const periodStart = getResetPeriodStart(resetIntervalHours);
+
+                // Next reset timestamp
+                const nextReset = new Date(periodStart);
+                nextReset.setUTCHours(nextReset.getUTCHours() + resetIntervalHours);
+
+                const watchedThisPeriod = await AdWatch.countDocuments({
                     userId,
                     adId: ad.adId,
-                    viewedAt: { $gte: today }
+                    claimed: true,
+                    createdAt: { $gte: periodStart }
                 });
 
-                const dailyLimit = ad.maxWatchesPerDay || 1;
-
                 return {
-                    id: ad.adId,
-                    network: ad.network,
-                    unitId: ad.unitId,
-                    reward: ad.reward,
-                    dailyLimit,
-                    watchedToday,
-                    locked: watchedToday >= dailyLimit
+                    id:                 ad.adId,
+                    network:            ad.network,
+                    unitId:             ad.unitId,
+                    reward:             ad.reward,
+                    watchesPerReset,
+                    resetIntervalHours,
+                    watchedThisPeriod,
+                    nextReset:          nextReset.toISOString(),
+                    locked:             watchedThisPeriod >= watchesPerReset
                 };
             })
         );
@@ -2420,67 +2476,40 @@ app.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
         res.status(500).json({ error: 'Failed to record watch' });
     }
 });
-
-// Claim ad reward (after watching confirmation)
-app.post('/api/secure/claim-ad-reward', validateInitData, async (req, res) => {
+app.post('/api/admin/ads/setup', validateAdmin, async (req, res) => {
     try {
-        const userId = req.tgUser.id;
-        const { adId } = req.body;
+        await ActiveAd.deleteMany({});
 
-        const watch = await AdWatch.findOne({ 
-    userId, 
-    adId, 
-    watched: true,
-    claimedAt: null 
-}).sort({ viewedAt: -1 });
+        const realAds = [{
+            adId:               'ad_1_adsgram',
+            network:            'adgrams',
+            unitId:             '36270',
+            reward:             500,       // 500 DASH per view (edit in panel)
+            resetIntervalHours: 24,        // resets once per day (edit in panel)
+            watchesPerReset:    3          // 3 watches per reset (edit in panel)
+        }];
 
-        if (!watch) {
-            return res.status(400).json({ error: 'Ad watch not found or already claimed' });
-        }
-
-        // Update user balance
-        const reward = watch.reward;
-        await User.updateOne(
-            { user_id: userId },
-            {
-                $inc: { balance: reward, total_earned: reward },
-                $push: {
-                    history: {
-                        title: `Ad Watch - ${watch.adNetwork}`,
-                        reward,
-                        taskId: `ad_${adId}`,
-                        date: new Date()
-                    }
-                }
-            }
-        );
-
-        // Mark as claimed
-        watch.claimedAt = new Date();
-        await watch.save();
-
-        return res.json({ success: true, newBalance: (await User.findOne({ user_id: userId })).balance });
-    } catch (err) {
-        console.error('Claim ad error:', err);
-        res.status(500).json({ error: 'Failed to claim reward' });
+        const result = await ActiveAd.insertMany(realAds);
+        await logAdminAction(req.adminUser, 'ads_created', 'Created real ad units');
+        res.json({ success: true, created: result.length });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
+
+
+function getResetPeriodStart(resetIntervalHours) {
+    const now = new Date();
+    const periodStartHour = Math.floor(now.getUTCHours() / resetIntervalHours) * resetIntervalHours;
+    const start = new Date(now);
+    start.setUTCHours(periodStartHour, 0, 0, 0);
+    return start;
+}
 
 // ==========================================================================
 // DAILY RESET TASKS ENDPOINTS
 // ==========================================================================
 
-function getNextResetTime(taskType) {
-    const now = new Date();
-    
-    if (taskType === 'daily') {
-        const tomorrow = new Date(now);
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        tomorrow.setHours(0, 0, 0, 0);
-        return tomorrow;
-    }
-    return now;
-}
 
 // Get all tasks with daily progress
 app.get('/api/secure/tasks-with-progress', validateInitData, async (req, res) => {
@@ -2602,29 +2631,7 @@ app.post('/api/secure/complete-daily-task', validateInitData, async (req, res) =
         res.status(500).json({ error: 'Failed to complete task' });
     }
 });
-app.post('/api/admin/ads/setup', validateAdmin, async (req, res) => {
-    try {
-        await ActiveAd.deleteMany({});
 
-        const realAds = [
-            {
-                adId: 'ad_1_adsgram',
-                network: 'adgrams',      // keep this exact string — it's your schema enum value
-                unitId: '36270',         // your real AdsGram Block ID
-                reward: 0.05,            // 👈 set your real reward amount
-                maxWatchesPerDay: 5      // 👈 set your real daily limit
-            }
-        ];
-
-        const result = await ActiveAd.insertMany(realAds);
-        await logAdminAction(req.adminUser, 'ads_created', 'Created real ad units');
-
-        res.json({ success: true, created: result.length, ads: result });
-    } catch (e) {
-        console.error('Ads setup error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
 app.get('/api/admin/test', validateAdmin, async (req, res) => {
     try {
         const count = await ActiveAd.countDocuments({});
@@ -2736,18 +2743,7 @@ await User.updateOne({ user_id: userId }, { $inc: { points: -withdrawAmount } })
         return res.status(500).json({ success: false, error: "Internal server error processing withdrawal." });
     }
 });
-/* ==========================================================================
-   YOUTUBE HIDDEN-CODE TASK SYSTEM
-   Drop this into your server.js (server.js shown in your upload).
 
-   WHERE TO PASTE EACH BLOCK:
-   1. "MODEL" block        -> with your other mongoose.model(...) declarations
-   2. "ADMIN ROUTES" block -> with your other app.get/post('/api/admin/...') routes
-   3. "USER ROUTES" block  -> with your other app.get/post('/api/secure/...') routes
-
-   Nothing here touches your existing Task model or routes — this is fully
-   separate so your normal/manual task system keeps working untouched.
-   ========================================================================== */
 
 // List all YouTube tasks (admin sees the code too, for editing/reference)
 app.get('/api/admin/youtube-tasks', validateAdmin, async (req, res) => {
@@ -2822,13 +2818,6 @@ app.post('/api/admin/youtube-tasks/toggle', validateAdmin, async (req, res) => {
     }
 });
 
-
-/* ============================================================
-   3. USER ROUTES  (place near your other /api/secure/* routes)
-   ============================================================ */
-
-// List YouTube tasks available to the current user (code is stripped out,
-// and tasks they already claimed are flagged so the UI can show "Claimed")
 app.get('/api/secure/youtube-tasks', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
