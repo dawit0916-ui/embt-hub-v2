@@ -768,7 +768,17 @@ async function sendReminderMessage(userId) {
         return false;
     }
 }
-
+function getNextResetTime(taskType) {
+    const now = new Date();
+    
+    if (taskType === 'daily') {
+        const tomorrow = new Date(now);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(0, 0, 0, 0);
+        return tomorrow;
+    }
+    return now;
+}
 async function checkAndSendReminders() {
     try {
         const now = new Date();
@@ -847,6 +857,7 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
+
 // Monitor when messages are deleted in DMs
 bot.on('message_edit', async (ctx) => {
     try {
