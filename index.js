@@ -684,7 +684,7 @@ async function sendReminderMessage(userId) {
             return false;
         }
 
-        const reminderText = `🔔 *You're Missing Out!*\n\nHey! Get back to earning with EMBT. Tap the button below to continue 🚀`;
+        const reminderText = `🔔 *You're Missing Out!*\n\nHey! Get back to earning with Dash Earn. Tap the button below to continue 🚀`;
 
         await bot.telegram.sendPhoto(
             userId,
@@ -788,7 +788,7 @@ bot.start(async (ctx) => {
         }
 
         const sentMsg = await ctx.reply(
-            `👋 Welcome to EMBT!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
+            `👋 Welcome to Dash Earn!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
             { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]]) }
         );
 
@@ -826,7 +826,7 @@ bot.action('start_bot_reminder', async (ctx) => {
         );
 
         await ctx.reply(
-            `👋 Welcome back to EMBT!\n\nTap below to continue earning:`,
+            `👋 Welcome back to Dash Earn!\n\nTap below to continue earning:`,
             { 
                 parse_mode: 'Markdown',
                 ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]])
@@ -2212,7 +2212,7 @@ app.get('/api/admin/registry', validateAdmin, async (req, res) => {
         res.status(500).json({ error: 'Failed to load registry' });
     }
 });
-app.post('/admin/console/eval', validateAdmin, async (req, res) => {
+app.post('/api/admin/console/eval', validateAdmin, async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: 'No code provided' });
 
@@ -2749,78 +2749,6 @@ app.post('/api/secure/youtube-tasks/claim', validateInitData, async (req, res) =
     }
 });
 
-app.post('/api/secure/exchange-dash', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const { dashAmount, ticketsAmount } = req.body;
-
-        const dash   = parseInt(dashAmount);
-        const tickets = parseInt(ticketsAmount);
-
-        // Validate rate: 100 DASH = 1 TICKET
-        if (!dash || !tickets || dash !== tickets * 100) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Invalid exchange rate. 100 DASH = 1 TICKET." 
-            });
-        }
-
-        const user = await User.findOne({ user_id: userId });
-        if (!user) return res.status(404).json({ success: false, error: "User not found." });
-        if (user.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
-
-        if ((user.balance || 0) < dash) {
-            return res.status(400).json({ 
-                success: false, 
-                error: `Insufficient DASH. You have ${parseInt(user.balance || 0).toLocaleString()} DASH.` 
-            });
-        }
-
-        // Deduct DASH, add TICKETS
-        await User.updateOne(
-            { user_id: userId },
-            {
-                $inc: {
-                    balance: -dash,    // DASH = balance field
-                    coins:   +tickets  // TICKET = coins field
-                }
-            }
-        );
-
-        const updatedUser = await User.findOne({ user_id: userId });
-
-        return res.json({
-            success: true,
-            newDash:    parseInt(updatedUser.balance || 0),
-            newUsdt:    parseFloat(updatedUser.points  || 0),
-            newTickets: parseInt(updatedUser.coins    || 0)
-        });
-
-    } catch (err) {
-        console.error("Exchange DASH error:", err);
-        return res.status(500).json({ success: false, error: "Internal server error." });
-    }
-});
-
-app.get('/api/secure/wallet/history', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const status = req.query.status || 'pending';
-
-        const history = await WalletTransaction.find({
-            userId,
-            ...(status !== 'all' ? { status } : {})
-        })
-        .sort({ timestamp: -1 })
-        .limit(20)
-        .lean();
-
-        return res.json({ success: true, history });
-    } catch (err) {
-        console.error("Wallet history error:", err);
-        return res.status(500).json({ error: "Failed to load history." });
-    }
-});
 
 app.get('/api/secure/history', validateInitData, async (req, res) => {
     try {
