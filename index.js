@@ -4,6 +4,7 @@ const express = require('express');
 const crypto = require('crypto');
 const https = require('https');
 const cors = require('cors');
+const util = require('util');
 require('dotenv').config();
 
 const app = express();
@@ -119,52 +120,6 @@ const Task = mongoose.model('Task', new mongoose.Schema({
     enabled: { type: Boolean, default: true }
 }));
 
-const Withdraw = mongoose.model('Withdraw', new mongoose.Schema({
-    user_id: Number,
-    username: String,
-    amount: Number,
-    address: String,
-    method: String, 
-    status: { type: String, default: 'pending' }, 
-    created_at: { type: Date, default: Date.now }
-}));
-
-const Notification = mongoose.model('Notification', new mongoose.Schema({
-    title: { type: String, required: true },
-    message: { type: String, required: true },
-    type: { type: String, enum: ['personal', 'system'], default: 'system' },
-    targetType: {
-        type: String,
-        enum: ['all', 'new_members', 'specific_member', 'all_members'],
-        required: true
-    },
-    targetUserId: { type: Number, default: null },
-    createdAt: { type: Date, default: Date.now }
-}));
-
-const UserNotificationState = mongoose.model('UserNotificationState', new mongoose.Schema({
-    userId: { type: Number, required: true },
-    notificationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Notification', required: true },
-    isRead: { type: Boolean, default: false }
-}));
-
-const WalletTransactionSchema = new mongoose.Schema({
-    userId: { type: Number, required: true, index: true },
-    txId: { type: String, unique: true, default: () => crypto.randomBytes(6).toString('hex').toUpperCase() },
-    txType: { type: String, enum: ['TRANSFER_OUT', 'TRANSFER_IN', 'WITHDRAWAL', 'REFERRAL_BONUS'], required: true },
-    assetType: { type: String, enum: ['usdt', 'coins', 'points'], required: true },
-    amount: { type: Number, required: true },
-    counterpartyId: { type: String, default: "SYSTEM_RESERVE_POOL" },
-    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending', index: true },
-    network: { type: String, default: "INTERNAL_LEDGER_RAILS" },
-    cryptoAddress: { type: String, default: "LOCAL_VAULT_NODE" },
-    memo: { type: String, default: "" },
-    timestamp: { type: Date, default: Date.now },
-    channelMessageId: { type: Number, default: null }
-});
-
-const WalletTransaction = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', WalletTransactionSchema);
-
 const ProofSubmission = mongoose.model('ProofSubmission', new mongoose.Schema({
     proofId: { type: String, unique: true, default: () => 'PRF-' + crypto.randomBytes(4).toString('hex').toUpperCase() },
     userId: { type: Number, required: true, index: true },
@@ -245,30 +200,6 @@ const TelegramVerification = mongoose.model('TelegramVerification', new mongoose
     lastChecked: { type: Date, default: Date.now }
 }));
 
-const SpinEconomySchema = new mongoose.Schema({
-    key: { type: String, unique: true, default: 'global' },
-    totalSpins: { type: Number, default: 0 },
-    totalUsdtAwarded: { type: Number, default: 0 },
-    totalDashAwarded: { type: Number, default: 0 },
-    targetUsdtPerSpin: { type: Number, default: 1 / 30 },
-    minUsdtProbability: { type: Number, default: 0.15 },
-    maxUsdtProbability: { type: Number, default: 0.60 },
-    maxSpinsPerDay: { type: Number, default: 10 }, // 0 = unlimited
-    updatedAt: { type: Date, default: Date.now }
-});
-const SpinEconomy = mongoose.models.SpinEconomy || mongoose.model('SpinEconomy', SpinEconomySchema);
-
-const SpinLogSchema = new mongoose.Schema({
-    userId: { type: Number, required: true, index: true },
-    winningIndex: Number,
-    rewardType: String,
-    rewardAmount: Number,
-    ticketCost: { type: Number, default: 1 },
-    usdtProbabilityUsed: Number,
-    isNewUserBonus: { type: Boolean, default: false },
-    timestamp: { type: Date, default: Date.now }
-});
-const SpinLog = mongoose.models.SpinLog || mongoose.model('SpinLog', SpinLogSchema);
 
 const ReminderConfig = mongoose.model('ReminderConfig', new mongoose.Schema({
     reminder_enabled: { type: Boolean, default: true },
@@ -382,65 +313,10 @@ async function getSettings() {
         return null;
     }
 }
-const BASE_USDT_WEIGHTS  = { 0: 0.08, 2: 0.07, 4: 0.05, 8: 0.15 };               // sums to 0.35
-const BASE_OTHER_WEIGHTS = { 1: 0.12, 3: 0.18, 5: 0.10, 6: 0.18, 7: 0.02, 9: 0.05 }; // sums to 0.65
-const BASELINE_USDT_PROBABILITY_MASS = 0.35;
 
-const SPIN_REWARD_AMOUNTS = {
-    0: { type: 'usdt', amount: 0.07 },
-    1: { type: 'dash', amount: 50 },
-    2: { type: 'usdt', amount: 0.05 },
-    3: { type: 'tryagain', amount: 0 },
-    4: { type: 'usdt', amount: 0.1 },
-    5: { type: 'ticket', amount: 1 },
-    6: { type: 'tryagain', amount: 0 },
-    7: { type: 'jackpot', amount: null }, // resolved by JACKPOT_FLAVORS below
-    8: { type: 'usdt', amount: 0.01 },
-    9: { type: 'dash', amount: 25 },
-};
 
-const JACKPOT_FLAVORS = [
-    { type: 'jackpot_usdt',   amount: 5 },
-    { type: 'jackpot_dash',   amount: 500 },
-    { type: 'jackpot_ticket', amount: 10 },
-];
 
-function pickWeightedIndex(weightMap) {
-    const entries = Object.entries(weightMap);
-    const total = entries.reduce((s, [, w]) => s + w, 0);
-    let roll = Math.random() * total;
-    for (const [idx, w] of entries) {
-        roll -= w;
-        if (roll <= 0) return Number(idx);
-    }
-    return Number(entries[entries.length - 1][0]);
-}
-
-async function getSpinEconomy() {
-    let econ = await SpinEconomy.findOne({ key: 'global' });
-    if (!econ) econ = await SpinEconomy.create({ key: 'global' });
-    return econ;
-}
-
-function computeUsdtProbabilityMass(econ) {
-    if (econ.totalSpins < 50) return BASELINE_USDT_PROBABILITY_MASS; // not enough data yet
-
-    const expectedSoFar = econ.targetUsdtPerSpin * econ.totalSpins;
-    if (expectedSoFar <= 0) return BASELINE_USDT_PROBABILITY_MASS;
-
-    const paceRatio = (expectedSoFar - econ.totalUsdtAwarded) / expectedSoFar; // >0 = underpaying
-    const GAIN = 0.4; // tune empirically — higher = more aggressive correction
-    const adjusted = BASELINE_USDT_PROBABILITY_MASS * (1 + GAIN * paceRatio);
-
-    return Math.max(econ.minUsdtProbability, Math.min(econ.maxUsdtProbability, adjusted));
-}
-
-function applyNewUserBonus(baseProbability, userTotalSpins, maxBound) {
-    if (userTotalSpins >= 5) return baseProbability;
-    const taper = (5 - userTotalSpins) / 5; // 1.0 on spin #1 → 0.2 on spin #5
-    const bonus = 0.08 * taper;
-    return Math.min(maxBound, baseProbability + bonus);
-}
+1
 function getUTCDayStart(date = new Date()) {
     const d = new Date(date);
     d.setUTCHours(0, 0, 0, 0);
@@ -2318,179 +2194,7 @@ app.post('/api/admin/broadcast', validateAdmin, async (req, res) => {
         }
     })();
 });
-app.get('/api/admin/spin-economy/stats', validateAdmin, async (req, res) => {
-    try {
-        const econ = await getSpinEconomy();
-        const expectedSoFar = econ.targetUsdtPerSpin * econ.totalSpins;
-        res.json({
-            success: true,
-            totalSpins: econ.totalSpins,
-            totalUsdtAwarded: econ.totalUsdtAwarded,
-            totalDashAwarded: econ.totalDashAwarded,
-            targetUsdtPerSpin: econ.targetUsdtPerSpin,
-            expectedUsdtSoFar: expectedSoFar,
-            payoutRatio: expectedSoFar > 0 ? (econ.totalUsdtAwarded / expectedSoFar) : null,
-            currentUsdtProbabilityMass: computeUsdtProbabilityMass(econ),
-            minUsdtProbability: econ.minUsdtProbability,
-            maxUsdtProbability: econ.maxUsdtProbability,
-            maxSpinsPerDay: econ.maxSpinsPerDay
-        });
-    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-app.post('/api/admin/spin-economy/config', validateAdmin, async (req, res) => {
-    try {
-        const { targetUsdtPerSpin, minUsdtProbability, maxUsdtProbability, maxSpinsPerDay } = req.body;
-        const updates = {};
-        if (targetUsdtPerSpin   !== undefined) updates.targetUsdtPerSpin   = Number(targetUsdtPerSpin);
-        if (minUsdtProbability  !== undefined) updates.minUsdtProbability  = Number(minUsdtProbability);
-        if (maxUsdtProbability  !== undefined) updates.maxUsdtProbability  = Number(maxUsdtProbability);
-        if (maxSpinsPerDay      !== undefined) updates.maxSpinsPerDay      = Number(maxSpinsPerDay);
 
-        await SpinEconomy.updateOne({ key: 'global' }, { $set: { ...updates, updatedAt: new Date() } }, { upsert: true });
-        await logAdminAction(req.adminUser, 'spin_economy_updated', `Updated: ${Object.keys(updates).join(', ')}`);
-        res.json({ success: true });
-    } catch (e) { res.status(500).json({ success: false, error: e.message }); }
-});
-app.get('/api/admin/spin-economy/recent-logs', validateAdmin, async (req, res) => {
-    try {
-        const limit = Math.min(100, parseInt(req.query.limit) || 50);
-        const logs = await SpinLog.find().sort({ timestamp: -1 }).limit(limit).lean();
-
-        const userIds = [...new Set(logs.map(l => l.userId))];
-        const users = await User.find({ user_id: { $in: userIds } }).select('user_id username first_name').lean();
-        const userMap = {};
-        users.forEach(u => { userMap[u.user_id] = u.username || u.first_name || `User_${u.user_id}`; });
-
-        const enriched = logs.map(l => ({ ...l, displayName: userMap[l.userId] || `User_${l.userId}` }));
-
-        res.json({ success: true, logs: enriched });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
-app.post('/api/secure/lucky-spin', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-
-        // 0. Existence + ban check up front — no ticket deducted if either fails.
-        const userDoc = await User.findOne({ user_id: userId }).select('is_banned coins totalSpins').lean();
-        if (!userDoc) return res.status(404).json({ success: false, error: "User not found." });
-        if (userDoc.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
-
-        // 1. Daily spin limit — checked before touching tickets.
-        const econ = await getSpinEconomy();
-        const dayStart = getUTCDayStart();
-        const spinsToday = await SpinLog.countDocuments({ userId, timestamp: { $gte: dayStart } });
-
-        if (econ.maxSpinsPerDay && spinsToday >= econ.maxSpinsPerDay) {
-            return res.status(429).json({
-                success: false,
-                error: `Daily spin limit reached (${econ.maxSpinsPerDay}/day). Resets at midnight UTC.`,
-                dailyLimitReached: true
-            });
-        }
-
-        // 2. ATOMIC ticket deduction — closes the double-spend race condition.
-        const userAfterDeduction = await User.findOneAndUpdate(
-            { user_id: userId, coins: { $gte: 1 } },
-            { $inc: { coins: -1 } },
-            { new: true }
-        );
-
-        if (!userAfterDeduction) {
-            return res.status(400).json({ success: false, error: "Not enough tickets. 1 TICKET required per spin." });
-        }
-
-        // 3. Live pacing read + new-user nudge (reuse econ already fetched above)
-        let usdtProbabilityMass = computeUsdtProbabilityMass(econ);
-        usdtProbabilityMass = applyNewUserBonus(usdtProbabilityMass, userAfterDeduction.totalSpins || 0, econ.maxUsdtProbability);
-
-        // 4. Pick pool, then index within pool
-        const useUsdtPool = Math.random() < usdtProbabilityMass;
-        const winningIndex = useUsdtPool ? pickWeightedIndex(BASE_USDT_WEIGHTS) : pickWeightedIndex(BASE_OTHER_WEIGHTS);
-
-        // 5. Resolve reward
-        const baseReward = SPIN_REWARD_AMOUNTS[winningIndex];
-        let rewardType = baseReward.type;
-        let rewardAmount = baseReward.amount;
-        let rewardMessage = "Try Again";
-
-        if (rewardType === 'jackpot') {
-            const flavor = JACKPOT_FLAVORS[Math.floor(Math.random() * JACKPOT_FLAVORS.length)];
-            rewardType = flavor.type;
-            rewardAmount = flavor.amount;
-        }
-
-        const userUpdate = { $inc: { totalSpins: 1 }, $set: { lastSpinAt: new Date() } };
-        if (!userAfterDeduction.firstSpinAt) userUpdate.$set.firstSpinAt = new Date();
-
-        switch (rewardType) {
-            case 'usdt':
-                userUpdate.$inc.points = rewardAmount;
-                userUpdate.$inc.totalUsdtWonFromSpins = rewardAmount;
-                rewardMessage = `+${rewardAmount} USDT`;
-                break;
-            case 'dash':
-                userUpdate.$inc.balance = rewardAmount;
-                rewardMessage = `+${rewardAmount} DASH`;
-                break;
-            case 'ticket':
-                userUpdate.$inc.coins = rewardAmount;
-                rewardMessage = `+${rewardAmount} TICKET`;
-                break;
-            case 'jackpot_usdt':
-                userUpdate.$inc.points = rewardAmount;
-                userUpdate.$inc.totalUsdtWonFromSpins = rewardAmount;
-                rewardMessage = `+${rewardAmount} USDT JACKPOT!`;
-                break;
-            case 'jackpot_dash':
-                userUpdate.$inc.balance = rewardAmount;
-                rewardMessage = `+${rewardAmount} DASH JACKPOT!`;
-                break;
-            case 'jackpot_ticket':
-                userUpdate.$inc.coins = rewardAmount;
-                rewardMessage = `+${rewardAmount} TICKET JACKPOT!`;
-                break;
-            default:
-                rewardMessage = "Try Again";
-        }
-
-        const updatedUser = await User.findOneAndUpdate({ user_id: userId }, userUpdate, { new: true });
-
-        // 6. Update global ledger (fire-and-forget)
-        const usdtAwardedThisSpin = (rewardType === 'usdt' || rewardType === 'jackpot_usdt') ? rewardAmount : 0;
-        const dashAwardedThisSpin = (rewardType === 'dash' || rewardType === 'jackpot_dash') ? rewardAmount : 0;
-
-        SpinEconomy.updateOne(
-            { key: 'global' },
-            { $inc: { totalSpins: 1, totalUsdtAwarded: usdtAwardedThisSpin, totalDashAwarded: dashAwardedThisSpin }, $set: { updatedAt: new Date() } }
-        ).catch(e => console.error('SpinEconomy update failed:', e.message));
-
-        // 7. Audit log
-        SpinLog.create({
-            userId, winningIndex, rewardType, rewardAmount,
-            ticketCost: 1,
-            usdtProbabilityUsed: usdtProbabilityMass,
-            isNewUserBonus: (userAfterDeduction.totalSpins || 0) < 5
-        }).catch(e => console.error('SpinLog write failed:', e.message));
-
-        return res.json({
-            success: true,
-            winningIndex,
-            rewardType,
-            rewardAmount,
-            rewardNotificationString: rewardMessage,
-            spinsRemainingToday: econ.maxSpinsPerDay ? Math.max(0, econ.maxSpinsPerDay - spinsToday - 1) : null,
-            newCoinBalance:   parseInt(updatedUser.coins   || 0),
-            newPointBalance:  parseFloat(updatedUser.points || 0),
-            newWalletBalance: parseFloat(updatedUser.balance || 0)
-        });
-
-    } catch (err) {
-        console.error("Lucky spin error:", err);
-        return res.status(500).json({ success: false, error: "Internal server error." });
-    }
-});
 app.get('/api/admin/registry', validateAdmin, async (req, res) => {
     try {
         const adminUsers = await User.find({ user_id: { $in: admins } })
@@ -2515,7 +2219,45 @@ app.get('/api/admin/registry', validateAdmin, async (req, res) => {
         res.status(500).json({ error: 'Failed to load registry' });
     }
 });
+app.post('/admin/console/eval', validateAdmin, async (req, res) => {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: 'No code provided' });
 
+  const logs = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalWarn = console.warn;
+
+  const capture = (tag) => (...args) => {
+    logs.push(`[${tag}] ` + args.map(a => typeof a === 'object' ? util.inspect(a) : String(a)).join(' '));
+  };
+
+  console.log = capture('log');
+  console.error = capture('error');
+  console.warn = capture('warn');
+
+  let result, error;
+  try {
+    const fn = new Function('require', 'module', 'exports', `
+      return (async () => { ${code} })();
+    `);
+    result = await fn(require, module, exports);
+  } catch (err) {
+    error = err.stack || err.message;
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    console.warn = originalWarn;
+  }
+
+  await logAdminAction(req.adminUser, 'console_eval', { code });
+
+  res.json({
+    result: result !== undefined ? util.inspect(result) : undefined,
+    logs,
+    error
+  });
+});
 // ==========================================================================
 // WATCH & EARN SYSTEM ENDPOINTS
 // ==========================================================================
@@ -2846,68 +2588,7 @@ app.get('/api/secure/leaderboard', validateInitData, async (req, res) => {
         return res.status(500).json({ error: "Failed to load leaderboard." });
     }
 });
-app.post('/api/secure/wallet/withdraw-usdt', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const { amount, cryptoAddress, network } = req.body;
-        const withdrawAmount = parseFloat(amount);
 
-        if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
-            return res.status(400).json({ success: false, error: "Invalid withdrawal amount." });
-        }
-        if (!cryptoAddress || cryptoAddress.length < 8) {
-            return res.status(400).json({ success: false, error: "Please enter a valid wallet address." });
-        }
-
-        const settings = await getSettings();
-        if (withdrawAmount < (settings.min_withdraw || 0.2)) {
-            return res.status(400).json({ success: false, error: `Minimum withdrawal is ${settings.min_withdraw} USDT.` });
-        }
-
-        const user = await User.findOne({ user_id: userId });
-        if (!user) return res.status(404).json({ success: false, error: "User not found." });
-        if (user.is_banned) return res.status(403).json({ success: false, error: "Account is banned." });
-        if ((user.points || 0) < withdrawAmount) {
-    return res.status(400).json({ success: false, error: "Insufficient USDT balance." });
-}
-
-await User.updateOne({ user_id: userId }, { $inc: { points: -withdrawAmount } });
-        const withdrawalTransaction = await WalletTransaction.create({
-            userId,
-            txType: 'WITHDRAWAL',
-            assetType: 'usdt',
-            amount: withdrawAmount,
-            counterpartyId: "EXTERNAL_MAINNET_SETTLEMENT_RESERVE",
-            status: 'pending',
-            network: network || 'BEP20',
-            cryptoAddress,
-            memo: 'Standard balance withdrawal'
-        });
-
-        try {
-            await bot.telegram.sendMessage(ADMIN_ID,
-                `🚨 NEW WITHDRAWAL REQUEST\n\n🆔 TX: ${withdrawalTransaction.txId}\n👤 User: ${userId} @${user.username || 'N/A'}\n💰 Amount: ${withdrawAmount} USDT\n🌐 Network: ${network || 'BEP20'}\n📬 Address: ${cryptoAddress}`
-            );
-        } catch (e) { console.error("Admin notify error:", e.message); }
-
-        try {
-            await bot.telegram.sendMessage(userId,
-                `✅ Withdrawal Request Submitted\n\n🆔 TX: ${withdrawalTransaction.txId}\n💰 Amount: ${withdrawAmount} USDT\n\nYour request is in the review queue.`
-            );
-        } catch (e) {}
-
-        const logMsg = `💸 *WITHDRAWAL REQUEST*\n🆔 TX: \`${withdrawalTransaction.txId}\`\n👤 User: \`${userId}\` @${user.username || 'N/A'}\n💰 Amount: ${withdrawAmount} USDT\n🌐 Network: ${network || 'BEP20'}\n📬 Address: \`${cryptoAddress}\``;
-        const channelMsgId = await postToChannel(logMsg);
-        if (channelMsgId) {
-            await WalletTransaction.updateOne({ _id: withdrawalTransaction._id }, { $set: { channelMessageId: channelMsgId } });
-        }
-
-        return res.json({ success: true, txId: withdrawalTransaction.txId, newBalance: user.points - withdrawAmount });
-    } catch (err) {
-        console.error("Withdraw USDT error:", err);
-        return res.status(500).json({ success: false, error: "Internal server error processing withdrawal." });
-    }
-});
 
 
 // List all YouTube tasks (admin sees the code too, for editing/reference)
@@ -3179,29 +2860,23 @@ setInterval(async () => {
 setInterval(async () => {
     try {
         console.log("🔄 [Reminder Check] Checking for deleted welcome messages...");
-        
-        const users = await User.find({ 
+
+        // Case 1: users still holding message IDs to check — verify if deleted
+        const usersWithPending = await User.find({ 
             pending_message_cleanup: { $exists: true, $ne: [] },
             is_banned: false
         }).lean();
 
-        for (const user of users) {
+        for (const user of usersWithPending) {
             for (const msgId of user.pending_message_cleanup) {
                 try {
                     await bot.telegram.getMessage(user.user_id, msgId);
                 } catch (err) {
                     if (err.message.includes('not found')) {
                         console.log(`[Reminder] Welcome message deleted for user ${user.user_id}`);
-                        
                         await UserReminder.updateOne(
                             { user_id: user.user_id },
-                            {
-                                $set: {
-                                    welcome_message_deleted: true,
-                                    deleted_at: new Date(),
-                                    last_reminder_sent: null
-                                }
-                            },
+                            { $set: { welcome_message_deleted: true, deleted_at: new Date(), last_reminder_sent: null } },
                             { upsert: true }
                         );
                     }
@@ -3209,7 +2884,41 @@ setInterval(async () => {
                 await new Promise(resolve => setTimeout(resolve, 50));
             }
         }
-        
+
+        // Case 2: cleanup array already empty (cleared by /api/secure/profile)
+        // but reminder flag never got flipped — these were falling through before
+        const usersAlreadyCleared = await User.find({
+            pending_message_cleanup: { $size: 0 },
+            is_banned: false
+        }).select('user_id').lean();
+
+        const clearedIds = usersAlreadyCleared.map(u => u.user_id);
+
+        if (clearedIds.length > 0) {
+            const existingRecords = await UserReminder.find({ user_id: { $in: clearedIds } }).lean();
+            const existingMap = new Map(existingRecords.map(r => [r.user_id, r]));
+
+            for (const uid of clearedIds) {
+                const rec = existingMap.get(uid);
+                if (!rec) {
+                    console.log(`[Reminder] Creating record for already-cleared user ${uid}`);
+                    await UserReminder.create({
+                        user_id: uid,
+                        welcome_message_deleted: true,
+                        deleted_at: new Date(),
+                        last_reminder_sent: null
+                    });
+                } else if (!rec.welcome_message_deleted) {
+                    console.log(`[Reminder] Flagging already-cleared user ${uid} as eligible`);
+                    await UserReminder.updateOne(
+                        { user_id: uid },
+                        { $set: { welcome_message_deleted: true, deleted_at: new Date(), last_reminder_sent: null } }
+                    );
+                }
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
+
         console.log("[Reminder Check] Deletion check complete");
     } catch (err) {
         console.error('[Welcome Message Checker Error]:', err.message);
