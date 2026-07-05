@@ -390,10 +390,9 @@ const validateAdmin = async (req, res, next) => {
     }
 
     req.adminUser = user;
-    req.tgUser = user;
-     return await ipGuardMiddleware(req, res, next);
+    req.tgUser = user; 
     User.updateOne({ user_id: user.id }, { $set: { last_admin_active: new Date() } }).catch(() => {});
-    next();
+    return await ipGuardMiddleware(req, res, next);
 };
     // ==========================================================================
 // UNIFIED ARCHITECTURAL MAINTENANCE INTERCEPTOR LAYER
@@ -692,7 +691,7 @@ async function sendReminderMessage(userId) {
 
         const reminderText = `🔔 *You're Missing Out!*\n\nHey! Get back to earning with Dash Earn. Tap the button below to continue 🚀`;
 
-     const senMsg = await bot.telegram.sendPhoto(
+        const senMsg = await bot.telegram.sendPhoto(
             userId,
             config.reminder_image_file_id,
             {
@@ -708,10 +707,13 @@ async function sendReminderMessage(userId) {
                 }
             }
         );
-await User.updateOne(
+        
+        // ✅ FIXED: Only push senMsg.message_id (no ctx needed)
+        await User.updateOne(
             { user_id: userId },
-            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, senMsg.message_id] } } }
+            { $push: { pending_message_cleanup: senMsg.message_id } }
         );
+        
         await UserReminder.updateOne(
             { user_id: userId },
             {
@@ -823,7 +825,6 @@ bot.action('start_bot_reminder', async (ctx) => {
 
         await ctx.answerCbQuery('Opening app... 🚀', { show_alert: false });
         
-        // Update reminder - they clicked so they're re-engaged
         await UserReminder.updateOne(
             { user_id: userId },
             { $set: { welcome_message_deleted: false } }
@@ -836,9 +837,11 @@ bot.action('start_bot_reminder', async (ctx) => {
                 ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]])
             }
         );
+        
+        // ⚠️ Safer: Only push the reply message ID
         await User.updateOne(
             { user_id: userId },
-            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, openedMsg.message_id] } } }
+            { $push: { pending_message_cleanup: openedMsg.message_id } }
         );
     } catch (err) {
         console.error('[Reminder Button Error]:', err.message);
@@ -2175,7 +2178,7 @@ app.get('/api/secure/available-ads', validateInitData, async (req, res) => {
         const adsWithStatus = await Promise.all(
             allAds.map(async (ad) => {
                 const resetIntervalHours = ad.resetIntervalHours || 24;
-                const watchesPerReset    = ad.watchesPerReset    || 2;
+                const watchesPerReset    = ad.watchesPerReset    || 4;
 
                 const periodStart = getResetPeriodStart(resetIntervalHours);
 
