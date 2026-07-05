@@ -691,7 +691,7 @@ async function sendReminderMessage(userId) {
 
         const reminderText = `🔔 *You're Missing Out!*\n\nHey! Get back to earning with Dash Earn. Tap the button below to continue 🚀`;
 
-        await bot.telegram.sendPhoto(
+     const senMsg = await bot.telegram.sendPhoto(
             userId,
             config.reminder_image_file_id,
             {
@@ -707,7 +707,10 @@ async function sendReminderMessage(userId) {
                 }
             }
         );
-
+await User.updateOne(
+            { user_id: userId },
+            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, senMsg.message_id] } } }
+        );
         await UserReminder.updateOne(
             { user_id: userId },
             {
@@ -825,7 +828,7 @@ bot.action('start_bot_reminder', async (ctx) => {
             { $set: { welcome_message_deleted: false } }
         );
 
-        await ctx.reply(
+       const openedMsg = await ctx.reply(
             `👋 Welcome back to Dash Earn!\n\nTap below to continue earning:`,
             { 
                 parse_mode: 'Markdown',
@@ -834,7 +837,7 @@ bot.action('start_bot_reminder', async (ctx) => {
         );
         await User.updateOne(
             { user_id: userId },
-            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, sentMsg.message_id] } } }
+            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, openedMsg.message_id] } } }
         );
     } catch (err) {
         console.error('[Reminder Button Error]:', err.message);
