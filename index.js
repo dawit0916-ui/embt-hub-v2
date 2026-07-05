@@ -60,15 +60,14 @@ const User = mongoose.model('User', new mongoose.Schema({
     first_name: { type: String, default: null },
     username: { type: String, default: null },
     balance: { type: Number, default: 0 },
-    points: { type: Number, default: 0.00 },
+    
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
     current_state: String,
     pending_message_cleanup: { type: [Number], default: [] },
     red_flag: { type: Boolean, default: false },
     referralCount: { type: Number, default: 0 },
-    has_withdrawn_once: { type: Boolean,default: false },
-    coins: { type: Number, default: 0 },
+    
     history: [{ type: Object }], 
     createdAt: { type: Date, default: Date.now },
     referral_tasks_done: { type: Number, default: 0 },
@@ -76,14 +75,20 @@ const User = mongoose.model('User', new mongoose.Schema({
     penalized_tasks: [String],
     is_banned: { type: Boolean, default: false },
     last_admin_active: { type: Date, default: null },
-    totalSpins: { type: Number, default: 0 },
+    
     whitelisted: { type: Boolean, default: false },
-    totalUsdtWonFromSpins: { type: Number, default: 0 },
-    firstSpinAt: { type: Date, default: null },
-    lastSpinAt: { type: Date, default: null },
+    
     referred_by: { type: Number, default: null } 
 }));
 
+const ReferralEarningSchema = new mongoose.Schema({
+    referrerId: { type: Number, required: true, index: true },
+    friendId: { type: Number, required: true, index: true },
+    totalEarned: { type: Number, default: 0 },
+    lastEarnedAt: { type: Date, default: Date.now }
+});
+ReferralEarningSchema.index({ referrerId: 1, friendId: 1 }, { unique: true });
+const ReferralEarning = mongoose.models.ReferralEarning || mongoose.model('ReferralEarning', ReferralEarningSchema);
 const Settings = mongoose.model('Settings', new mongoose.Schema({
     min_withdraw: { type: Number, default: 0.2 },
     ref_bonus: { type: Number, default: 0.1 },
@@ -798,12 +803,7 @@ bot.start(async (ctx) => {
             { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, sentMsg.message_id] } } }
         );
 
-        // Initialize reminder tracking
-        await UserReminder.updateOne(
-            { user_id: userId },
-            { $set: { welcome_message_deleted: false, deleted_at: null } },
-            { upsert: true }
-        );
+        
 
     } catch (error) {
         console.error("START ERROR:", error);
@@ -831,6 +831,10 @@ bot.action('start_bot_reminder', async (ctx) => {
                 parse_mode: 'Markdown',
                 ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]])
             }
+        );
+        await User.updateOne(
+            { user_id: userId },
+            { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, sentMsg.message_id] } } }
         );
     } catch (err) {
         console.error('[Reminder Button Error]:', err.message);
@@ -1120,8 +1124,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
                 user_id: user.user_id,
                 first_name: user.first_name || 'User',
                 balance: user.balance || 0, 
-                points: user.points || 0.00,
-                coins: user.coins || 0.00,
+                
                 total_earned: user.total_earned || 0,
                 referrals: user.referralCount || 0,
                 tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
@@ -1144,8 +1147,7 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
             const defaultEmptyPayload = {
                 success: false,
                 balance: 0,
-                points: 0,
-                coins: 0,
+                
                 total_earned: 0,
                 referrals: 0,
                 tasksCompletedCount: 0,
@@ -1478,96 +1480,7 @@ app.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-app.get('/api/admin/payouts/pending', validateAdmin, async (req, res) => {
-    try {
-        const payouts = await WalletTransaction.find({
-            txType: 'WITHDRAWAL',
-            assetType: 'usdt',
-            status: 'pending'
-        })
-        .sort({ timestamp: -1 })
-        .lean();
 
-        res.json({
-            success: true,
-            payouts
-        });
-
-    } catch (error) {
-        console.error('Pending payout fetch error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch pending payouts'
-        });
-    }
-});
-app.post('/api/admin/payouts/action', validateAdmin, async (req, res) => {
-    const { txId, status } = req.body;
-
-    try {
-        if (!['accepted', 'rejected'].includes(status)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid status'
-            });
-        }
-
-        const payout = await WalletTransaction.findOne({
-            txId,
-            txType: 'WITHDRAWAL',
-            status: 'pending'
-        });
-
-        if (!payout) {
-            return res.status(404).json({
-                success: false,
-                error: 'Payout request not found'
-            });
-        }
-
-        payout.status = status;
-        await payout.save();
-        if (payout.channelMessageId) {
-    const adminName = req.adminUser.first_name || req.adminUser.username || 'Admin';
-    await replyInChannel(payout.channelMessageId,
-        `${status === 'accepted' ? '✅ APPROVED' : '❌ REJECTED'} by ${adminName}\n💰 ${payout.amount} USDT\n🕐 ${new Date().toLocaleString()}`
-    );
-        }
-        await logAdminAction(req.adminUser, status === 'accepted' ? 'payout_approved' : 'payout_rejected', `${status} ${payout.amount} ${payout.assetType.toUpperCase()} for user ${payout.userId}`);
-        // Only refund if you deducted balance during withdrawal creation
-        if (status === 'rejected') {
-    await User.updateOne(
-        { user_id: payout.userId },
-        { $inc: { points: payout.amount } }
-    );
-}
-
-        try {
-            await bot.telegram.sendMessage(
-                payout.userId,
-                status === 'accepted'
-                    ? `✅ Withdrawal approved\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}\n /start`
-                    : `❌ Withdrawal rejected\n\nAmount: ${payout.amount} USDT\nTX ID: ${payout.txId}`
-            );
-        } catch (telegramError) {
-            console.error('Telegram notification error:', telegramError);
-        }
-
-        res.json({
-            success: true,
-            txId: payout.txId,
-            status: payout.status
-        });
-
-    } catch (error) {
-        console.error('Admin payout action error:', error);
-
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
 app.post('/api/secure/ads/start-session', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
@@ -1661,9 +1574,8 @@ app.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
         return res.json({
             success: true,
             reward: session.reward,
-            newBalance: updatedUser.balance,
-            newPoints: updatedUser.points,
-            newCoins: updatedUser.coins
+            newBalance: updatedUser.balance
+            
         });
 
     } catch (err) {
@@ -1722,8 +1634,7 @@ app.get('/api/admin/users', validateAdmin, async (req, res) => {
                 username: u.username || 'N/A',
                 first_name: u.first_name || 'Member',
                 balance: u.balance || 0,
-                points: u.points || 0,
-                coins: u.coins || 0,
+                
                 whitelisted: u.whitelisted || false,
                 total_earned: u.total_earned || 0,
                 referralCount: u.referralCount || 0,
@@ -1915,13 +1826,14 @@ app.get('/api/secure/referrals', validateInitData, async (req, res) => {
         const friends = await User.find({ referred_by: userId })
             .select('user_id username first_name completed_tasks');
 
-        const friendIds = friends.map(f => String(f.user_id));
-        const commissions = await WalletTransaction.aggregate([
-            { $match: { userId, txType: 'REFERRAL_BONUS', counterpartyId: { $in: friendIds } } },
-            { $group: { _id: '$counterpartyId', total: { $sum: '$amount' } } }
-        ]);
-        const commissionMap = {};
-        commissions.forEach(c => commissionMap[c._id] = c.total);
+        const friendIds = friends.map(f => f.user_id);
+        const earnings = await ReferralEarning.find({
+            referrerId: userId,
+            friendId: { $in: friendIds }
+        }).lean();
+
+        const earningsMap = {};
+        earnings.forEach(e => { earningsMap[e.friendId] = e.totalEarned; });
 
         res.json({
             success: true,
@@ -1929,78 +1841,11 @@ app.get('/api/secure/referrals', validateInitData, async (req, res) => {
                 username: f.username || `User_${f.user_id}`,
                 first_name: f.first_name || f.username || 'Friend',
                 tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
-                commission_earned: commissionMap[String(f.user_id)] || 0
+                commission_earned: earningsMap[f.user_id] || 0
             }))
         });
     } catch (e) {
         res.status(500).json({ error: e.message });
-    }
-});
-
-
-app.post('/api/admin/notifications/send', validateAdmin, async (req, res) => {
-    try {
-        const { title, message, targetType, targetUserId } = req.body;
-
-        const newNotification = new Notification({
-            title: title,
-            message: message,
-            targetType: targetType || 'all_members', // Matches the user-side array criteria
-            targetUserId: targetUserId ? Number(targetUserId) : null, // Forces strict numeric checking
-            createdAt: new Date()
-        });
-
-        await newNotification.save();
-        return res.json({ success: true, message: "Notification broadcast saved." });
-
-    } catch (err) {
-        console.error("Admin Notification Deployment Error:", err.message);
-        return res.status(500).json({ error: "Failed to dispatch administrative broadcast tracking matrices." });
-    }
-});
-
-app.get('/api/secure/notifications', validateInitData, async (req, res) => {
-    try {
-        // 1. Verify safe extraction context from fixed middleware
-        if (!req.tgUser || !req.tgUser.id) {
-            return res.status(401).json({ error: "Unauthorized access: Session signature token context missing." });
-        }
-
-        const userId = Number(req.tgUser.id);
-
-        // 2. Query matching notifications tracking variables using your schema parameters
-        const dbAlerts = await Notification.find({
-            $or: [
-                { targetType: 'all' },
-                { targetType: 'all_members' },
-                { targetType: 'specific_member', targetUserId: userId }
-            ]
-        }).sort({ createdAt: -1 });
-
-        // 3. 🔥 STRUCTURAL BRIDGE: Map schema keys precisely to frontend UI engine properties
-        const clientFormattedAlerts = dbAlerts.map(doc => {
-            // Convert Mongoose Document to a plain object to prevent wrapper extraction bugs
-            const notif = doc.toObject(); 
-            
-            return {
-                id: notif._id,
-                // Maps your target tracking filter into the client's 'type' field expectation
-                type: notif.type || notif.targetType || 'system', 
-                title: notif.title || 'Notification',
-                // Directly populates the core text payload string
-                message: notif.message || '', 
-                msg: notif.message || '', // Backup alignment matching the frontend's fallbacks
-                read: notif.isRead || false,
-                date: notif.createdAt || new Date()
-            };
-        });
-
-        // 4. Return clean uniform array straight to client syncUserInbox()
-        return res.json(clientFormattedAlerts);
-
-    } catch (err) {
-        console.error("Critical error synchronizing notification ledger paths:", err.message);
-        return res.status(500).json({ error: "Internal notification pipeline framework handling error." });
     }
 });
 
@@ -2046,36 +1891,29 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         if (!task) return res.status(404).json({ error: "Task not found." });
 
         // 3. ✅ TELEGRAM MEMBERSHIP VERIFICATION
-        // Only verify if task type is auto and URL is a t.me link
         if (task.type === 'auto' && task.url && task.url.includes('t.me/')) {
-            try {
-                // Extract channel username from URL
-                // Handles: t.me/channelname or t.me/+invitecode
-                const urlParts = task.url.split('t.me/')[1];
-                const channelUsername = urlParts.split('/')[0];
+    try {
+        const urlParts = task.url.split('t.me/')[1];
+        const channelUsername = urlParts.split('/')[0];
 
-                // Skip invite links (t.me/+xxx) - can't verify those
-                if (!channelUsername.startsWith('+')) {
-                    const channelId = '@' + channelUsername;
-
-                    const member = await bot.telegram.getChatMember(channelId, userId);
-
-                    // Check if user is actually a member
-                    const validStatuses = ['member', 'administrator', 'creator'];
-                    if (!validStatuses.includes(member.status)) {
-                        return res.status(400).json({ 
-                            error: "You have not joined the channel yet. Please join first then claim." 
-                        });
-                    }
-                }
-            } catch (verifyErr) {
-                console.error("Membership verification error:", verifyErr.message);
-                // If bot is not admin in channel, skip verification
-                // Don't block the user — just log it
-                console.warn(`Could not verify membership for channel in task ${taskId}. Bot may not be admin.`);
+        if (!channelUsername.startsWith('+')) {
+            const channelId = '@' + channelUsername;
+            const member = await bot.telegram.getChatMember(channelId, userId);
+            const validStatuses = ['member', 'administrator', 'creator'];
+            if (!validStatuses.includes(member.status)) {
+                return res.status(400).json({ 
+                    error: "You have not joined the channel yet. Please join first then claim." 
+                });
             }
         }
-
+    } catch (verifyErr) {
+        console.error("Membership verification error:", verifyErr.message);
+        // FAIL CLOSED — block the claim instead of letting it through
+        return res.status(400).json({ 
+            error: "Could not verify channel membership. Please make sure you've joined and try again." 
+        });
+    }
+            }
         // 4. Get settings
         const settings = await getSettings();
 
@@ -2106,15 +1944,11 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         if (user.referred_by) {
     const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
     await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
-    await WalletTransaction.create({
-        userId: user.referred_by,
-        txType: 'REFERRAL_BONUS',
-        assetType: 'usdt',
-        amount: commission,
-        counterpartyId: String(userId),
-        status: 'accepted',
-        memo: `Commission from ${user.first_name || user.username || userId} completing "${task.title}"`
-    });
+    await ReferralEarning.updateOne(
+        { referrerId: user.referred_by, friendId: userId },
+        { $inc: { totalEarned: commission }, $set: { lastEarnedAt: new Date() } },
+        { upsert: true }
+    );
 }
 
         // 7. Referral milestone bonus
@@ -2131,7 +1965,7 @@ app.post('/api/secure/claim-task', validateInitData, async (req, res) => {
                 try {
                     await bot.telegram.sendMessage(
                         user.referred_by,
-                        `🎊 *Milestone Bonus:* Your friend completed 3 tasks! You earned ${settings.ref_bonus_amount} USDT.`,
+                        `🎊 *Invite Bonus:* Your friend completed 3 tasks! You earned ${settings.ref_bonus_amount} DASH.\n Also your Commission Unlocked with this friend. \n you Earn percent set from this user earnings now.`,
                         { parse_mode: 'Markdown' }
                     );
                 } catch (botErr) {
@@ -2804,7 +2638,7 @@ setInterval(async () => {
     } catch (err) {
         console.error('[Reminder Worker Error]:', err.message);
     }
-}, 30 * 60 * 1000); // Every 30 minutes
+}, 2 * 60 * 60 * 1000); // Every 2 hours
 
 // 🔄 Check for deleted welcome messages
 setInterval(async () => {
@@ -2873,7 +2707,7 @@ setInterval(async () => {
     } catch (err) {
         console.error('[Welcome Message Checker Error]:', err.message);
     }
-}, 5 * 60 * 1000); // Check every 5 minutes
+}, 30 * 60 * 1000); // Check every 30 minutes
 // 🤖 Automated Background Validation (Keep your existing one)
 setInterval(async () => {
     try {
