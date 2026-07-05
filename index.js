@@ -375,7 +375,7 @@ const validateInitData = (req, res, next) => {
 
     // REPLACE WITH:
     req.tgUser = user;
-    return ipGuardMiddleware(req, res, next);
+    return await ipGuardMiddleware(req, res, next);
 };
 
 const validateAdmin = async (req, res, next) => {
@@ -487,7 +487,7 @@ function getClientIP(req) {
     );
 }
 
-function ipGuardMiddleware(req, res, next) {
+const ipGuardMiddleware = async (req, res, next) => {
     if (!req.tgUser) return next();
 
     const ip = getClientIP(req);
@@ -501,70 +501,70 @@ function ipGuardMiddleware(req, res, next) {
     if (knownUsers.size >= 1) {
         const existingUserId = [...knownUsers][0];
 
-        // ── WHITELIST BYPASS ──
-        (async () => {
-            try {
-                const [newUserDoc, existingUserDoc] = await Promise.all([
-                    User.findOne({ user_id: userId }).select('whitelisted referred_by').lean(),
-                    User.findOne({ user_id: existingUserId }).select('whitelisted').lean()
-                ]);
+        // ── WHITELIST BYPASS (NOW AWAITED) ──
+        try {
+            const [newUserDoc, existingUserDoc] = await Promise.all([
+                User.findOne({ user_id: userId }).select('whitelisted referred_by').lean(),
+                User.findOne({ user_id: existingUserId }).select('whitelisted').lean()
+            ]);
 
-                if (newUserDoc?.whitelisted || existingUserDoc?.whitelisted) {
-                    console.log(`[IP Guard] Bypassed — whitelisted user involved (${userId} or ${existingUserId})`);
-                    knownUsers.add(userId);
-                    return next();
-                }
+            if (newUserDoc?.whitelisted || existingUserDoc?.whitelisted) {
+                console.log(`[IP Guard] Bypassed — whitelisted user involved (${userId} or ${existingUserId})`);
+                knownUsers.add(userId);
+                return next();  // ✅ NOW this actually works
+            }
 
-                // Not whitelisted — proceed with normal ban flow
-                await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
+            // Not whitelisted — proceed with normal ban flow
+            await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
 
-                const inviterId = newUserDoc?.referred_by;
-                if (inviterId) {
-                    const inviterDoc = await User.findOne({ user_id: inviterId }).select('whitelisted').lean();
-                    if (inviterDoc?.whitelisted) {
-                        console.log(`[IP Guard] Inviter ${inviterId} is whitelisted — no strike issued`);
+            const inviterId = newUserDoc?.referred_by;
+            if (inviterId) {
+                const inviterDoc = await User.findOne({ user_id: inviterId }).select('whitelisted').lean();
+                if (inviterDoc?.whitelisted) {
+                    console.log(`[IP Guard] Inviter ${inviterId} is whitelisted — no strike issued`);
+                } else {
+                    if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
+                    inviterStrikes[inviterId]++;
+                    const strikes = inviterStrikes[inviterId];
+
+                    if (strikes >= STRIKE_LIMIT) {
+                        await User.updateOne({ user_id: inviterId }, { $set: { is_banned: true } });
+                        await AdminActivity.create({
+                            admin_id: 0, admin_name: 'IP Guard (Auto)',
+                            action: 'inviter_banned',
+                            description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes. Last IP: ${ip}`
+                        });
                     } else {
-                        if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
-                        inviterStrikes[inviterId]++;
-                        const strikes = inviterStrikes[inviterId];
-
-                        if (strikes >= STRIKE_LIMIT) {
-                            await User.updateOne({ user_id: inviterId }, { $set: { is_banned: true } });
-                            await AdminActivity.create({
-                                admin_id: 0, admin_name: 'IP Guard (Auto)',
-                                action: 'inviter_banned',
-                                description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes. Last IP: ${ip}`
-                            });
-                        } else {
-                            await AdminActivity.create({
-                                admin_id: 0, admin_name: 'IP Guard (Auto)',
-                                action: 'inviter_strike',
-                                description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}. Banned account: ${userId} on IP: ${ip}`
-                            });
-                        }
+                        await AdminActivity.create({
+                            admin_id: 0, admin_name: 'IP Guard (Auto)',
+                            action: 'inviter_strike',
+                            description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}. Banned account: ${userId} on IP: ${ip}`
+                        });
                     }
                 }
-
-                await AdminActivity.create({
-                    admin_id: 0, admin_name: 'IP Guard (Auto)',
-                    action: 'invited_account_banned',
-                    description: `Banned duplicate account ${userId} on IP ${ip}. Original user: ${existingUserId}`
-                });
-            } catch (e) {
-                console.error('[IP Guard] DB error:', e.message);
             }
-        })();
 
-        return res.status(403).json({
-            error: 'multi_account_detected',
-            banned: true,
-            message: `Self referral detected: IP matches with ${existingUserId}`
-        });
+            await AdminActivity.create({
+                admin_id: 0, admin_name: 'IP Guard (Auto)',
+                action: 'invited_account_banned',
+                description: `Banned duplicate account ${userId} on IP ${ip}. Original user: ${existingUserId}`
+            });
+
+            return res.status(403).json({
+                error: 'multi_account_detected',
+                banned: true,
+                message: `Self referral detected: IP matches with ${existingUserId}`
+            });
+
+        } catch (e) {
+            console.error('[IP Guard] DB error:', e.message);
+            return res.status(500).json({ error: 'Server error' });
+        }
     }
 
     knownUsers.add(userId);
     next();
-}
+};
 async function getFastTaskConfig() {
     let cfg = await FastTaskConfig.findOne({ key: 'global' });
     if (!cfg) cfg = await FastTaskConfig.create({ key: 'global' });
