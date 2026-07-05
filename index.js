@@ -817,7 +817,7 @@ bot.action('start_bot_reminder', async (ctx) => {
         const userId = ctx.from.id;
         const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app';
 
-        await ctx.answerCallbackQuery('Opening app... 🚀', { show_alert: false });
+        await ctx.answerCbQuery('Opening app... 🚀', { show_alert: false });
         
         // Update reminder - they clicked so they're re-engaged
         await UserReminder.updateOne(
