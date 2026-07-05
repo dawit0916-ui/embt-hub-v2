@@ -25,8 +25,8 @@ app.get('/api/adsgram/reward-callback', async (req, res) => {
             return res.status(403).send('Forbidden');
         }
 
-        if (!userId || !sessionId) {
-            return res.status(400).send('Missing params');
+         if (!userId) {
+            return res.status(400).send('Missing userId');
         }
 
         // In the S2S callback, find by userId + adId instead of sessionId
