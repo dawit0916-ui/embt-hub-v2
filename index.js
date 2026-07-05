@@ -364,7 +364,7 @@ function verifyTelegramInitData(rawInitData) {
     }
 }
 
-const validateInitData = (req, res, next) => {
+const validateInitData = async (req, res, next) => {
     const rawInitData = req.headers['x-telegram-init-data'] || req.headers['X-Telegram-Init-Data'];
     const user = verifyTelegramInitData(rawInitData);
 
@@ -391,6 +391,7 @@ const validateAdmin = async (req, res, next) => {
 
     req.adminUser = user;
     req.tgUser = user;
+     return await ipGuardMiddleware(req, res, next);
     User.updateOne({ user_id: user.id }, { $set: { last_admin_active: new Date() } }).catch(() => {});
     next();
 };
