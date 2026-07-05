@@ -1059,6 +1059,35 @@ app.get('/api/admin/whitelist', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+const sseClients = [];
+
+// Patch server-side console once at startup to broadcast to connected panels
+(function patchServerConsole() {
+    ['log', 'warn', 'error'].forEach(level => {
+        const orig = console[level].bind(console);
+        console[level] = (...args) => {
+            orig(...args);
+            const line = args.map(a => typeof a === 'object' ? util.inspect(a) : String(a)).join(' ');
+            const payload = JSON.stringify({ level, message: line, time: new Date().toISOString() });
+            sseClients.forEach(client => {
+                try { client.write(`data: ${payload}\n\n`); } catch (e) {}
+            });
+        };
+    });
+})();
+
+app.get('/api/admin/console/stream', validateAdmin, (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    sseClients.push(res);
+    req.on('close', () => {
+        const idx = sseClients.indexOf(res);
+        if (idx !== -1) sseClients.splice(idx, 1);
+    });
+});
 app.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
         // 1. TRUST THE MIDDLEWARE: validateInitData has already cryptographically verified the user
