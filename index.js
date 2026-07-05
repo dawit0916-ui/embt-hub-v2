@@ -1531,7 +1531,7 @@ app.post('/api/secure/ads/start-session', validateInitData, async (req, res) => 
 app.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
-        const { sessionId } = req.body;
+        const { sessionId, blurDetected } = req.body;
 
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
 
@@ -1544,7 +1544,13 @@ app.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
         if (!session) {
             return res.status(404).json({ error: 'Session not found or already claimed' });
         }
-
+        // ✅ NEW: Require blur detection (CTA engagement proof)
+        if (!blurDetected) {
+            return res.status(400).json({ 
+                error: 'You Must Click The Button in AD.',
+                pending: false 
+            });
+        }
         if (!session.serverConfirmed) {
             // S2S ping hasn't arrived yet — tell frontend to retry
             return res.status(202).json({
