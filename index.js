@@ -2157,7 +2157,7 @@ app.post('/api/admin/console/eval', validateAdmin, async (req, res) => {
     console.warn = originalWarn;
   }
 
-  await logAdminAction(req.adminUser, 'console_eval', { code });
+  await logAdminAction(req.adminUser, 'console_eval', `Code: ${code.substring(0, 50)}...`);
 
   res.json({
     result: result !== undefined ? util.inspect(result) : undefined,
