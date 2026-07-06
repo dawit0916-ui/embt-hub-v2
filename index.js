@@ -380,7 +380,7 @@ const validateInitData = async (req, res, next) => {
 
     // REPLACE WITH:
     req.tgUser = user;
-    return await ipGuardMiddleware(req, res, next);
+    ipGuardMiddleware(req, res, next);
 };
 
 const validateAdmin = async (req, res, next) => {
@@ -397,7 +397,7 @@ const validateAdmin = async (req, res, next) => {
     req.adminUser = user;
     req.tgUser = user; 
     User.updateOne({ user_id: user.id }, { $set: { last_admin_active: new Date() } }).catch(() => {});
-    return await ipGuardMiddleware(req, res, next);
+    ipGuardMiddleware(req, res, next);
 };
     // ==========================================================================
 // UNIFIED ARCHITECTURAL MAINTENANCE INTERCEPTOR LAYER
@@ -574,10 +574,11 @@ await AdminActivity.create({
     }
 
     // Add new user to this IP's tracking
-    tracking.userIds.push(userId);
-    tracking.lastSeen = new Date();
-    await tracking.save();
-    next();
+    // ✅ CORRECT
+tracking.userIds.push(userId);
+tracking.lastSeen = new Date();
+await tracking.save();
+return next();  // ← Return the next() call
 };
 async function getFastTaskConfig() {
     let cfg = await FastTaskConfig.findOne({ key: 'global' });
