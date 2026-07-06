@@ -526,8 +526,41 @@ const ipGuardMiddleware = async (req, res, next) => {
             }
 
             // Not whitelisted — BAN
-            await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
-            // ... strike logic ...
+await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
+
+// ── STRIKE LOGIC ──
+const inviterId = newUserDoc?.referred_by;
+if (inviterId) {
+    const inviterDoc = await User.findOne({ user_id: inviterId }).select('whitelisted').lean();
+    if (inviterDoc?.whitelisted) {
+        console.log(`[IP Guard] Inviter ${inviterId} is whitelisted — no strike issued`);
+    } else {
+        if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
+        inviterStrikes[inviterId]++;
+        const strikes = inviterStrikes[inviterId];
+
+        if (strikes >= STRIKE_LIMIT) {
+            await User.updateOne({ user_id: inviterId }, { $set: { is_banned: true } });
+            await AdminActivity.create({
+                admin_id: 0, admin_name: 'IP Guard (Auto)',
+                action: 'inviter_banned',
+                description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes.`
+            });
+        } else {
+            await AdminActivity.create({
+                admin_id: 0, admin_name: 'IP Guard (Auto)',
+                action: 'inviter_strike',
+                description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}.`
+            });
+        }
+    }
+}
+
+await AdminActivity.create({
+    admin_id: 0, admin_name: 'IP Guard (Auto)',
+    action: 'invited_account_banned',
+    description: `Banned duplicate account ${userId} on IP ${ip}. Original user: ${existingUserId}`
+});
             return res.status(403).json({
                 error: 'multi_account_detected',
                 banned: true,
