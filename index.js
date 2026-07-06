@@ -495,10 +495,7 @@ function getClientIP(req) {
 
 const ipGuardMiddleware = async (req, res, next) => {
     try {
-        if (!req.tgUser) {
-            console.log('🔍 [IP Guard] No tgUser, skipping');
-            return next();
-        }
+        if (!req.tgUser) return next();
 
         const ip = getClientIP(req);
         const userId = req.tgUser.id;
@@ -506,101 +503,65 @@ const ipGuardMiddleware = async (req, res, next) => {
         console.log(`🔍 [IP Guard] Checking user ${userId} from IP ${ip}`);
 
         let tracking = await IPTracking.findOne({ ip });
-        console.log(`🔍 [IP Guard] Found tracking:`, tracking ? 'YES' : 'NO');
 
         if (!tracking) {
-            console.log(`✅ [IP Guard] First user from this IP, creating tracking`);
+            console.log(`✅ [IP Guard] First user from this IP`);
             tracking = await IPTracking.create({ ip, userIds: [userId] });
             return next();
         }
 
         if (tracking.userIds.includes(userId)) {
-            console.log(`✅ [IP Guard] Same user, same IP, allowing`);
+            console.log(`✅ [IP Guard] Same user, same IP`);
             return next();
         }
 
-        if (tracking.userIds.length >= 1) {
-            const existingUserId = tracking.userIds[0];
-            console.log(`⚠️ [IP Guard] New user ${userId} from existing IP. Existing: ${existingUserId}`);
+        // Different user detected on same IP
+        console.log(`⚠️ [IP Guard] Different user ${userId} from existing IP`);
 
-            try {
-                const [newUserDoc, existingUserDoc] = await Promise.all([
-                    User.findOne({ user_id: userId }).select('whitelisted referred_by').lean(),
-                    User.findOne({ user_id: existingUserId }).select('whitelisted').lean()
-                ]);
+        const newUserDoc = await User.findOne({ user_id: userId })
+            .select('whitelisted referred_by').lean();
+        const existingUserId = tracking.userIds[0];
+        const existingUserDoc = await User.findOne({ user_id: existingUserId })
+            .select('whitelisted').lean();
 
-                console.log(`🔍 [IP Guard] New user whitelisted:`, newUserDoc?.whitelisted);
-                console.log(`🔍 [IP Guard] Existing user whitelisted:`, existingUserDoc?.whitelisted);
+        // ✅ Option C: Check if inviter is whitelisted
+        const inviterId = newUserDoc?.referred_by;
+        const inviterDoc = inviterId ? await User.findOne({ user_id: inviterId })
+            .select('whitelisted').lean() : null;
 
-                if (newUserDoc?.whitelisted || existingUserDoc?.whitelisted) {
-                    console.log(`✅ [IP Guard] Whitelist bypass - allowing`);
-                    tracking.userIds.push(userId);
-                    tracking.lastSeen = new Date();
-                    await tracking.save();
-                    return next();
-                }
+        console.log(`🔍 [IP Guard] New user inviter: ${inviterId}, whitelisted: ${inviterDoc?.whitelisted}`);
 
-                console.log(`❌ [IP Guard] BANNING user ${userId}`);
-                await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
-
-                // Strike logic
-                const inviterId = newUserDoc?.referred_by;
-                if (inviterId) {
-                    const inviterDoc = await User.findOne({ user_id: inviterId }).select('whitelisted').lean();
-                    if (inviterDoc?.whitelisted) {
-                        console.log(`[IP Guard] Inviter ${inviterId} is whitelisted — no strike`);
-                    } else {
-                        if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
-                        inviterStrikes[inviterId]++;
-                        const strikes = inviterStrikes[inviterId];
-
-                        console.log(`⚠️ [IP Guard] Inviter ${inviterId} strike: ${strikes}/${STRIKE_LIMIT}`);
-
-                        if (strikes >= STRIKE_LIMIT) {
-                            await User.updateOne({ user_id: inviterId }, { $set: { is_banned: true } });
-                            await AdminActivity.create({
-                                admin_id: 0, admin_name: 'IP Guard (Auto)',
-                                action: 'inviter_banned',
-                                description: `Inviter ${inviterId} banned after ${strikes} strikes.`
-                            });
-                        } else {
-                            await AdminActivity.create({
-                                admin_id: 0, admin_name: 'IP Guard (Auto)',
-                                action: 'inviter_strike',
-                                description: `Inviter ${inviterId} strike ${strikes}/${STRIKE_LIMIT}`
-                            });
-                        }
-                    }
-                }
-
-                await AdminActivity.create({
-                    admin_id: 0, admin_name: 'IP Guard (Auto)',
-                    action: 'invited_account_banned',
-                    description: `Banned duplicate account ${userId} on IP ${ip}. Original: ${existingUserId}`
-                });
-
-                return res.status(403).json({
-                    error: 'multi_account_detected',
-                    banned: true,
-                    message: `Self referral detected from IP ${ip}`
-                });
-
-            } catch (dbErr) {
-                console.error('❌ [IP Guard] Database error:', dbErr.message);
-                return res.status(500).json({ error: 'Server error', details: dbErr.message });
-            }
+        // Allow if:
+        // 1. New user is whitelisted, OR
+        // 2. Existing user is whitelisted, OR
+        // 3. New user's INVITER is whitelisted (shared IP approval)
+        if (newUserDoc?.whitelisted || existingUserDoc?.whitelisted || inviterDoc?.whitelisted) {
+            console.log(`✅ [IP Guard] Whitelist bypass - allowing`);
+            tracking.userIds.push(userId);
+            tracking.lastSeen = new Date();
+            await tracking.save();
+            return next();
         }
 
-        // Add new user to this IP's tracking
-        console.log(`✅ [IP Guard] Adding user ${userId} to tracking`);
-        tracking.userIds.push(userId);
-        tracking.lastSeen = new Date();
-        await tracking.save();
-        return next();
+        // Not whitelisted - BAN only the duplicate account
+        console.log(`❌ [IP Guard] BANNING user ${userId} (inviter not whitelisted)`);
+        await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
+
+        await AdminActivity.create({
+            admin_id: 0, admin_name: 'IP Guard (Auto)',
+            action: 'duplicate_account_banned',
+            description: `User ${userId} banned. Duplicate IP ${ip} detected. Inviter ${inviterId} not whitelisted.`
+        });
+
+        return res.status(403).json({
+            error: 'multi_account_detected',
+            banned: true,
+            message: 'Account banned: Multiple accounts on same IP ${ip} you are not allowed to use more than one account in the same ip'
+        });
 
     } catch (err) {
-        console.error('❌ [IP Guard] Fatal error:', err.message, err.stack);
-        return res.status(500).json({ error: 'Server error', details: err.message });
+        console.error('❌ [IP Guard] Error:', err.message);
+        return res.status(500).json({ error: 'Server error' });
     }
 };
 async function getFastTaskConfig() {
