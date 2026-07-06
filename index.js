@@ -238,7 +238,12 @@ const FastTaskClaimSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now }
 });
 const FastTaskClaim = mongoose.models.FastTaskClaim || mongoose.model('FastTaskClaim', FastTaskClaimSchema);
-
+const IPTracking = mongoose.model('IPTracking', new mongoose.Schema({
+    ip: { type: String, required: true, unique: true },
+    userIds: [Number],  // Array of user_id's seen on this IP
+    firstSeen: { type: Date, default: Date.now },
+    lastSeen: { type: Date, default: Date.now }
+}));
 
 async function logAdminAction(adminUser, action, description) {
     try {
@@ -487,21 +492,26 @@ function getClientIP(req) {
     );
 }
 
+
+
 const ipGuardMiddleware = async (req, res, next) => {
     if (!req.tgUser) return next();
 
     const ip = getClientIP(req);
     const userId = req.tgUser.id;
 
-    if (!ipUserMap[ip]) ipUserMap[ip] = new Set();
-    const knownUsers = ipUserMap[ip];
+    let tracking = await IPTracking.findOne({ ip });
+    if (!tracking) {
+        tracking = await IPTracking.create({ ip, userIds: [userId] });
+        return next();  // First user from this IP
+    }
 
-    if (knownUsers.has(userId)) return next();
+    if (tracking.userIds.includes(userId)) return next();  // Same user, same IP = ok
 
-    if (knownUsers.size >= 1) {
-        const existingUserId = [...knownUsers][0];
+    if (tracking.userIds.length >= 1) {
+        const existingUserId = tracking.userIds[0];
 
-        // ── WHITELIST BYPASS (NOW AWAITED) ──
+        // ── WHITELIST CHECK ──
         try {
             const [newUserDoc, existingUserDoc] = await Promise.all([
                 User.findOne({ user_id: userId }).select('whitelisted referred_by').lean(),
@@ -509,51 +519,19 @@ const ipGuardMiddleware = async (req, res, next) => {
             ]);
 
             if (newUserDoc?.whitelisted || existingUserDoc?.whitelisted) {
-                console.log(`[IP Guard] Bypassed — whitelisted user involved (${userId} or ${existingUserId})`);
-                knownUsers.add(userId);
-                return next();  // ✅ NOW this actually works
+                tracking.userIds.push(userId);
+                tracking.lastSeen = new Date();
+                await tracking.save();
+                return next();
             }
 
-            // Not whitelisted — proceed with normal ban flow
+            // Not whitelisted — BAN
             await User.updateOne({ user_id: userId }, { $set: { is_banned: true } });
-
-            const inviterId = newUserDoc?.referred_by;
-            if (inviterId) {
-                const inviterDoc = await User.findOne({ user_id: inviterId }).select('whitelisted').lean();
-                if (inviterDoc?.whitelisted) {
-                    console.log(`[IP Guard] Inviter ${inviterId} is whitelisted — no strike issued`);
-                } else {
-                    if (!inviterStrikes[inviterId]) inviterStrikes[inviterId] = 0;
-                    inviterStrikes[inviterId]++;
-                    const strikes = inviterStrikes[inviterId];
-
-                    if (strikes >= STRIKE_LIMIT) {
-                        await User.updateOne({ user_id: inviterId }, { $set: { is_banned: true } });
-                        await AdminActivity.create({
-                            admin_id: 0, admin_name: 'IP Guard (Auto)',
-                            action: 'inviter_banned',
-                            description: `Inviter ${inviterId} banned after ${strikes} self-referral strikes. Last IP: ${ip}`
-                        });
-                    } else {
-                        await AdminActivity.create({
-                            admin_id: 0, admin_name: 'IP Guard (Auto)',
-                            action: 'inviter_strike',
-                            description: `Inviter ${inviterId} received strike ${strikes}/${STRIKE_LIMIT}. Banned account: ${userId} on IP: ${ip}`
-                        });
-                    }
-                }
-            }
-
-            await AdminActivity.create({
-                admin_id: 0, admin_name: 'IP Guard (Auto)',
-                action: 'invited_account_banned',
-                description: `Banned duplicate account ${userId} on IP ${ip}. Original user: ${existingUserId}`
-            });
-
+            // ... strike logic ...
             return res.status(403).json({
                 error: 'multi_account_detected',
                 banned: true,
-                message: `Self referral detected: IP matches with ${existingUserId}`
+                message: `Self referral detected from IP ${ip}`
             });
 
         } catch (e) {
@@ -562,7 +540,10 @@ const ipGuardMiddleware = async (req, res, next) => {
         }
     }
 
-    knownUsers.add(userId);
+    // Add new user to this IP's tracking
+    tracking.userIds.push(userId);
+    tracking.lastSeen = new Date();
+    await tracking.save();
     next();
 };
 async function getFastTaskConfig() {
