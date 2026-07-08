@@ -2712,35 +2712,41 @@ app.post('/api/secure/complete-daily-task', validateInitData, async (req, res) =
         const userId = req.tgUser.id;
         const { taskId } = req.body;
 
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(401).json({ error: 'User not found' });
+
         const task = await Task.findOne({ id: taskId, enabled: true });
         if (!task) return res.status(404).json({ error: 'Task not found' });
-       // 1.5 CHECK daily task feature + level limit
-if (!user.features_unlocked?.daily_tasks) {
-    return res.status(403).json({ 
-        error: 'Daily tasks unlock at Level 2',
-        unlocksAtLevel: 2
-    });
-}
 
-// Get level config to check daily limit
-const levelConfig = await LevelConfig.findOne({ level: user.level || 0 });
-const dailyLimit = levelConfig?.daily_task_limit || 1;
+        // Fetch level config ONCE at the top
+        const levelConfig = await LevelConfig.findOne({ level: user.level || 0 });
 
-// Count completed daily tasks TODAY
-const dayStart = getUTCDayStart();
-const completedToday = await DailyTaskProgress.countDocuments({
-    userId,
-    claimedToday: true,
-    lastCompletedAt: { $gte: dayStart }
-});
+        // 1.5 CHECK daily task feature + level limit
+        if (!user.features_unlocked?.daily_tasks) {
+            return res.status(403).json({ 
+                error: 'Daily tasks unlock at Level 2',
+                unlocksAtLevel: 2
+            });
+        }
 
-if (completedToday >= dailyLimit) {
-    return res.status(400).json({ 
-        error: `Daily limit reached (${dailyLimit}/${dailyLimit})`,
-        completedToday,
-        dailyLimit
-    });
-}
+        const dailyLimit = levelConfig?.daily_task_limit || 1;
+
+        // Count completed daily tasks TODAY
+        const dayStart = getUTCDayStart();
+        const completedToday = await DailyTaskProgress.countDocuments({
+            userId,
+            claimedToday: true,
+            lastCompletedAt: { $gte: dayStart }
+        });
+
+        if (completedToday >= dailyLimit) {
+            return res.status(400).json({ 
+                error: `Daily limit reached (${dailyLimit}/${dailyLimit})`,
+                completedToday,
+                dailyLimit
+            });
+        }
+
         let progress = await DailyTaskProgress.findOne({ userId, taskId });
         if (!progress) {
             progress = await DailyTaskProgress.create({
@@ -2767,29 +2773,28 @@ if (completedToday >= dailyLimit) {
         progress.lastCompletedAt = new Date();
         await progress.save();
 
-        // Get level-based daily task reward (instead of task.reward)
-const levelConfig = await LevelConfig.findOne({ level: user.level || 0 });
-const dailyTaskReward = levelConfig?.daily_task_reward || 500;
+        // Use the levelConfig already fetched above
+        const dailyTaskReward = levelConfig?.daily_task_reward || 500;
 
-// Apply multiplier (ad-based, not level-based)
-const multiplier = req.body.multiplier || 1.0;  // Sent from frontend
-const finalReward = Math.floor(dailyTaskReward * multiplier);
+        // Apply multiplier (ad-based, not level-based)
+        const multiplier = req.body.multiplier || 1.0;
+        const finalReward = Math.floor(dailyTaskReward * multiplier);
 
-// Award user
-await User.updateOne(
-    { user_id: userId },
-    {
-        $inc: { balance: finalReward, total_earned: finalReward },
-        $push: {
-            history: {
-                title: `Daily Task: ${task.title}`,
-                reward: finalReward,
-                taskId: `daily_${taskId}`,
-                date: new Date()
+        // Award user
+        await User.updateOne(
+            { user_id: userId },
+            {
+                $inc: { balance: finalReward, total_earned: finalReward },
+                $push: {
+                    history: {
+                        title: `Daily Task: ${task.title}`,
+                        reward: finalReward,
+                        taskId: `daily_${taskId}`,
+                        date: new Date()
+                    }
+                }
             }
-        }
-    }
-);
+        );
 
         const updatedUser = await User.findOne({ user_id: userId });
         return res.json({ 
