@@ -260,24 +260,6 @@ const FeatureUsageLog = mongoose.model('FeatureUsageLog', new mongoose.Schema({
     metadata: { type: Object, default: {} },    // task_id, duration, etc
     createdAt: { type: Date, default: Date.now }
 }));
-const FastTaskConfigSchema = new mongoose.Schema({
-    key: { type: String, unique: true, default: 'global' },
-    blockId: { type: String, default: '' },
-    minReward: { type: Number, default: 50 },
-    maxReward: { type: Number, default: 150 },
-    dailyLimit: { type: Number, default: 10 },
-    enabled: { type: Boolean, default: true },
-    updatedAt: { type: Date, default: Date.now }
-});
-const FastTaskConfig = mongoose.models.FastTaskConfig || mongoose.model('FastTaskConfig', FastTaskConfigSchema);
-
-const FastTaskClaimSchema = new mongoose.Schema({
-    userId: { type: Number, required: true, index: true },
-    reward: { type: Number, required: true },
-    source: { type: String, enum: ['reward_callback', 'client_event'], default: 'reward_callback' },
-    timestamp: { type: Date, default: Date.now }
-});
-const FastTaskClaim = mongoose.models.FastTaskClaim || mongoose.model('FastTaskClaim', FastTaskClaimSchema);
 const IPTracking = mongoose.model('IPTracking', new mongoose.Schema({
     ip: { type: String, required: true, unique: true },
     userIds: [Number],  // Array of user_id's seen on this IP
@@ -604,64 +586,7 @@ const ipGuardMiddleware = async (req, res, next) => {
         return res.status(500).json({ error: 'Server error' });
     }
 };
-async function getFastTaskConfig() {
-    let cfg = await FastTaskConfig.findOne({ key: 'global' });
-    if (!cfg) cfg = await FastTaskConfig.create({ key: 'global' });
-    return cfg;
-}
 
-function rollRandomReward(min, max) {
-    const lo = Math.min(min, max);
-    const hi = Math.max(min, max);
-    return Math.floor(Math.random() * (hi - lo + 1)) + lo;
-}
-
-function getUTCDayStartFastTask(date = new Date()) {
-    const d = new Date(date);
-    d.setUTCHours(0, 0, 0, 0);
-    return d;
-}
-
-async function creditFastTaskReward(userId, source) {
-    const cfg = await getFastTaskConfig();
-    if (!cfg.enabled) return { success: false, error: 'Fast Tasks are currently disabled.' };
-
-    const dayStart = getUTCDayStartFastTask();
-    const claimsToday = await FastTaskClaim.countDocuments({ userId, timestamp: { $gte: dayStart } });
-
-    if (cfg.dailyLimit && claimsToday >= cfg.dailyLimit) {
-        return { success: false, error: 'Daily Fast Task limit reached.', dailyLimitReached: true };
-    }
-
-    const user = await User.findOne({ user_id: userId }).select('is_banned').lean();
-    if (!user) return { success: false, error: 'User not found.' };
-    if (user.is_banned) return { success: false, error: 'Account is banned.' };
-
-    const rewardAmount = rollRandomReward(cfg.minReward, cfg.maxReward);
-
-    await User.updateOne(
-        { user_id: userId },
-        {
-            $inc: { balance: rewardAmount, total_earned: rewardAmount },
-            $push: {
-                history: {
-                    title: 'Fast Task (Adsgram)',
-                    reward: rewardAmount,
-                    taskId: 'fasttask_adsgram',
-                    date: new Date()
-                }
-            }
-        }
-    );
-
-    await FastTaskClaim.create({ userId, reward: rewardAmount, source });
-
-    return {
-        success: true,
-reward: rewardAmount,
-        claimsRemainingToday: cfg.dailyLimit ? Math.max(0, cfg.dailyLimit - claimsToday - 1) : null
-    };
-}
 // --- GHOST VALIDATOR ENGINE ---
 async function runGhostValidator(ctx) {
     try {
@@ -1215,114 +1140,35 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
     }
 });
         
-
-// ADMIN ROUTES
-app.get('/api/admin/fast-task/config', validateAdmin, async (req, res) => {
+app.get('/api/ads/monetag-reward-callback', async (req, res) => {
     try {
-        const cfg = await getFastTaskConfig();
-        res.json({ success: true, config: cfg });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
+        const { ymid, event_type, reward_event_type, telegram_id } = req.query;
+        const userId = Number(telegram_id);
 
-app.post('/api/admin/fast-task/config', validateAdmin, async (req, res) => {
-    try {
-        const { blockId, minReward, maxReward, dailyLimit, enabled } = req.body;
-        const updates = { updatedAt: new Date() };
+        // Only reward if event was monetized (valued)
+        if (reward_event_type === 'valued' && userId) {
+            // Find and confirm the pending Monetag session
+            const session = await AdWatch.findOne({
+                userId,
+                adNetwork: 'monetag',
+                claimed: false,
+                serverConfirmed: false
+            }).sort({ createdAt: -1 });
 
-        if (blockId !== undefined) updates.blockId = String(blockId).trim();
-        if (minReward !== undefined) updates.minReward = Number(minReward);
-        if (maxReward !== undefined) updates.maxReward = Number(maxReward);
-        if (dailyLimit !== undefined) updates.dailyLimit = Number(dailyLimit);
-        if (enabled !== undefined) updates.enabled = Boolean(enabled);
-
-        if (updates.minReward !== undefined && updates.maxReward !== undefined && updates.minReward > updates.maxReward) {
-            return res.status(400).json({ success: false, error: 'Min reward cannot exceed max reward.' });
+            if (session) {
+                session.serverConfirmed = true;
+                await session.save();
+            }
         }
 
-        await FastTaskConfig.updateOne({ key: 'global' }, { $set: updates }, { upsert: true });
-        await logAdminAction(req.adminUser, 'fast_task_config_updated', `Updated: ${Object.keys(updates).join(', ')}`);
-
-        const cfg = await getFastTaskConfig();
-        res.json({ success: true, config: cfg });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
-
-app.get('/api/admin/fast-task/recent-claims', validateAdmin, async (req, res) => {
-    try {
-        const limit = Math.min(100, parseInt(req.query.limit) || 50);
-        const claims = await FastTaskClaim.find().sort({ timestamp: -1 }).limit(limit).lean();
-
-        const userIds = [...new Set(claims.map(c => c.userId))];
-        const users = await User.find({ user_id: { $in: userIds } }).select('user_id username first_name').lean();
-        const userMap = {};
-        users.forEach(u => { userMap[u.user_id] = u.username || u.first_name || `User_${u.user_id}`; });
-
-        const enriched = claims.map(c => ({ ...c, displayName: userMap[c.userId] || `User_${c.userId}` }));
-        res.json({ success: true, claims: enriched });
-    } catch (e) {
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
-
-// USER ROUTES
-app.get('/api/secure/fast-task-config', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const cfg = await getFastTaskConfig();
-
-        const dayStart = getUTCDayStartFastTask();
-        const claimsToday = await FastTaskClaim.countDocuments({ userId, timestamp: { $gte: dayStart } });
-
-        res.json({
-            success: true,
-            blockId: cfg.blockId,
-            enabled: cfg.enabled,
-            dailyLimit: cfg.dailyLimit,
-            claimsToday,
-            claimsRemainingToday: cfg.dailyLimit ? Math.max(0, cfg.dailyLimit - claimsToday) : null
-        });
-    } catch (err) {
-        console.error('Fast task config fetch error:', err);
-        res.status(500).json({ success: false, error: 'Failed to load Fast Task config.' });
-    }
-});
-
-app.post('/api/secure/fast-task-claim', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const result = await creditFastTaskReward(userId, 'client_event');
-        if (!result.success) return res.status(400).json(result);
-        return res.json(result);
-    } catch (err) {
-        console.error('Fast task claim error:', err);
-        res.status(500).json({ success: false, error: 'Failed to process reward.' });
-    }
-});
-
-// PUBLIC REWARD CALLBACK (Adsgram server hits this)
-// Set in Adsgram dashboard as:
-// https://embt-gateway.onrender.com/api/fast-task/reward-callback?userid=[userId]
-app.get('/api/fast-task/reward-callback', async (req, res) => {
-    try {
-        const userId = Number(req.query.userid);
-        if (!userId || isNaN(userId)) return res.status(400).send('Missing userid');
-
-        const result = await creditFastTaskReward(userId, 'reward_callback');
-        if (!result.success) {
-            console.warn(`[FastTask Callback] Rejected user ${userId}: ${result.error}`);
-        } else {
-            console.log(`[FastTask Callback] Credited ${result.reward} DASH to user ${userId}`);
-        }
+        // Always return 200 OK so Monetag stops retrying
         return res.status(200).send('ok');
     } catch (err) {
-        console.error('Fast task reward callback error:', err);
+        console.error('Monetag postback error:', err);
         return res.status(200).send('ok');
     }
 });
+
 
 app.post('/api/admin/settings', validateAdmin, async (req, res) => {
     try {
@@ -2611,26 +2457,6 @@ app.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
     } catch (err) {
         console.error('Watch ad error:', err);
         res.status(500).json({ error: 'Failed to record watch' });
-    }
-});
-app.post('/api/admin/ads/setup', validateAdmin, async (req, res) => {
-    try {
-        await ActiveAd.deleteMany({});
-
-        const realAds = [{
-            adId:               'ad_1_adsgram',
-            network:            'adgrams',
-            unitId:             '36270',
-            reward:             500,       // 500 DASH per view (edit in panel)
-            resetIntervalHours: 24,        // resets once per day (edit in panel)
-            watchesPerReset:    3          // 3 watches per reset (edit in panel)
-        }];
-
-        const result = await ActiveAd.insertMany(realAds);
-        await logAdminAction(req.adminUser, 'ads_created', 'Created real ad units');
-        res.json({ success: true, created: result.length });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
     }
 });
 
