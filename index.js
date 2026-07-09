@@ -1142,12 +1142,11 @@ app.get('/api/secure/profile', validateInitData, async (req, res) => {
         
 app.get('/api/ads/monetag-reward-callback', async (req, res) => {
     try {
-        const { ymid, event_type, reward_event_type, telegram_id } = req.query;
+        const { ymid, event, value, telegram_id } = req.query;
+        console.log('[Monetag S2S] Raw query:', req.query);
         const userId = Number(telegram_id);
 
-        // Only reward if event was monetized (valued)
-        if (reward_event_type === 'valued' && userId) {
-            // Find and confirm the pending Monetag session
+        if (value === 'yes' && userId) {
             const session = await AdWatch.findOne({
                 userId,
                 adNetwork: 'monetag',
@@ -1161,7 +1160,6 @@ app.get('/api/ads/monetag-reward-callback', async (req, res) => {
             }
         }
 
-        // Always return 200 OK so Monetag stops retrying
         return res.status(200).send('ok');
     } catch (err) {
         console.error('Monetag postback error:', err);
