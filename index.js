@@ -1146,7 +1146,7 @@ app.get('/api/ads/monetag-reward-callback', async (req, res) => {
         console.log('[Monetag S2S] Raw query:', req.query);
         const userId = Number(telegram_id);
 
-        if (value === 'yes' && userId) {
+        if (value === 'valued' && userId) {
             const session = await AdWatch.findOne({
                 userId,
                 adNetwork: 'monetag',
