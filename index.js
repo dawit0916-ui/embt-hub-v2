@@ -2048,7 +2048,7 @@ app.post('/api/admin/user/set-level', validateAdmin, async (req, res) => {
 
 app.get('/api/secure/daily-tasks/today', validateInitData, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.tguser.id;
     const userRow = await db.query('SELECT level FROM users WHERE user_id = ?', [userId]);
     const level = userRow[0]?.level || 1;
     const reward = 50 * level;
@@ -2095,7 +2095,7 @@ app.get('/api/secure/daily-tasks/today', validateInitData, async (req, res) => {
 // POST /api/secure/daily-tasks/verify-reaction
 app.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.tguser.id;
 
     // 1. Ensure the active task today is indeed a reaction task
     if (activeTask.type !== 'reaction') {
