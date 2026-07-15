@@ -608,7 +608,7 @@ const ipGuardMiddleware = async (req, res, next) => {
 };
 const CONFIG_CHANNEL_ID = -1003931137962; // private CMS channel
 const PUBLIC_GROUP_ID = -1002352280130; // your group
-const PUBLIC_CHANNEL_ID = -1001987654321; // your channel
+const PUBLIC_CHANNEL_ID = -1003473429839; // your channel
 let activeTask = {
   type: null,        // "comment" | "reaction"
   word: null,
