@@ -3226,4 +3226,10 @@ setInterval(() => { https.get('https://embt-gateway.onrender.com', () => console
 
 mongoose.connect(process.env.MONGO_URI).then(() => console.log("✅ Main Database Node Connected & Synced"));
 app.get('/', (req, res) => res.send('Gateway Active'));
-bot.launch();
+bot.launch({
+  dropPendingUpdates: true,
+  allowedUpdates: ['message', 'callback_query', 'chat_member', 'message_reaction', 'message_reaction_count']
+}).catch((err) => {
+  console.error('❌ Bot polling died, forcing restart:', err.message);
+  process.exit(1); // let Render restart the process so polling comes back clean
+});
