@@ -267,6 +267,26 @@ const IPTracking = mongoose.model('IPTracking', new mongoose.Schema({
     lastSeen: { type: Date, default: Date.now }
 }));
 
+const PendingReactionSchema = new mongoose.Schema({
+  userId: { type: Number,  required: true  },
+  messageId: { type: String, required: true   },
+  emoji: { type: String,required: true },
+  createdAt: { type: Date, default: Date.now,index: { expires: '48h' } // AUTO-DELETE after 48 hours (Saves DB space!)  }
+});
+// Match SQL "PRIMARY KEY (user_id, message_id)"
+// This prevents duplicate reaction entries for the same user on the same post.
+PendingReactionSchema.index({ userId: 1, messageId: 1 }, { unique: true });
+
+const PendingReaction = mongoose.model('PendingReaction', PendingReactionSchema);
+const CompletedTask = mongoose.model('CompletedTask', new mongoose.Schema({
+    userId: { type: Number, required: true, index: true },
+    taskType: { type: String, required: true },  // 'comment' or 'reaction'
+    taskKey: { type: String, required: true },   // 'YYYY-MM-DD' or 'message_id'
+    createdAt: { type: Date, default: Date.now }
+}).index({ userId: 1, taskType: 1, taskKey: 1 }, { unique: true })); // Prevents double-claiming
+
+
+
 async function logAdminAction(adminUser, action, description) {
     try {
         await AdminActivity.create({
@@ -586,7 +606,133 @@ const ipGuardMiddleware = async (req, res, next) => {
         return res.status(500).json({ error: 'Server error' });
     }
 };
+const CONFIG_CHANNEL_ID = -1003931137962; // private CMS channel
 
+let activeTask = {
+  type: null,        // "comment" | "reaction"
+  word: null,
+  emoji: null,
+  messageId: null
+};
+
+async function updateDailyConfig() {
+  try {
+    const chat = await bot.telegram.getChat(CONFIG_CHANNEL_ID);
+    const text = chat.pinned_message?.text || '';
+
+    const taskMatch = text.match(/TASK:\s*(comment|reaction)/i);
+    if (!taskMatch) return console.warn('No TASK: line found in pinned message');
+
+    const type = taskMatch[1].toLowerCase();
+
+    if (type === 'comment') {
+      const wordMatch = text.match(/WORD:\s*(\S+)/i);
+      activeTask = {
+        type: 'comment',
+        word: wordMatch ? wordMatch[1].toUpperCase() : null,
+        emoji: null,
+        messageId: null
+      };
+    } else {
+      const emojiMatch = text.match(/EMOJI:\s*(\S+)/iu);
+      const msgMatch = text.match(/MESSAGE_ID:\s*(\d+)/i);
+      activeTask = {
+        type: 'reaction',
+        word: null,
+        emoji: emojiMatch ? emojiMatch[1] : null,
+        messageId: msgMatch ? parseInt(msgMatch[1]) : null
+      };
+    }
+
+    console.log('✅ Active task today:', activeTask);
+  } catch (err) {
+    console.error('Error reading CMS config:', err);
+  }
+}
+
+setInterval(updateDailyConfig, 5 * 60 * 1000);
+updateDailyConfig();
+const PUBLIC_GROUP_ID = -1002352280130; // your group
+
+bot.on('message', async (ctx) => {
+  try {
+    if (activeTask.type !== 'comment') return;       // not today's task — ignore
+    if (ctx.chat.id !== PUBLIC_GROUP_ID) return;
+    if (!ctx.message.text) return;
+
+    const text = ctx.message.text.trim().toUpperCase(); // case-insensitive
+    if (text !== activeTask.word) return;
+
+    const userId = ctx.from.id;
+    const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+    const already = await db.query(
+      `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'comment' AND task_key = ?`,
+      [userId, todayKey]
+    );
+    if (already.length > 0) return; // silently ignore repeats, no spam DM needed
+
+    // Ensure user exists
+    let userRow = await db.query('SELECT level, balance FROM users WHERE user_id = ?', [userId]);
+    if (userRow.length === 0) {
+      await db.query('INSERT INTO users (user_id, username, balance) VALUES (?, ?, 0)', [userId, ctx.from.username || null]);
+      userRow = [{ level: 1, balance: 0 }];
+    }
+
+    const level = userRow[0].level || 1;
+    const reward = 50 * level; // 50–500
+
+    await db.query(
+      `INSERT INTO completed_tasks (user_id, task_type, task_key) VALUES (?, 'comment', ?)`,
+      [userId, todayKey]
+    );
+    await db.query('UPDATE users SET balance = balance + ? WHERE user_id = ?', [reward, userId]);
+
+    const updated = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
+
+    // NOTE: message is NOT deleted, per your spec
+    await bot.telegram.sendMessage(
+      userId,
+      `✅ Task verified!\n🎉 +${reward} DASH\n💰 Balance: ${updated[0].balance} DASH`
+    );
+
+    // Push notification (if you have a push service wired to user_id)
+    await sendPushNotification(userId, 'Task Verified! ✅', `+${reward} DASH earned`);
+
+  } catch (err) {
+    console.error('Error in comment task handler:', err);
+  }
+});
+const PUBLIC_CHANNEL_ID = -1001987654321; // your channel
+
+bot.on('message_reaction', async (ctx) => {
+  try {
+    if (activeTask.type !== 'reaction') return;
+    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return;
+
+    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
+    if (message_id !== activeTask.messageId) return;
+
+    const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
+    if (!hasTargetEmoji) return;
+
+    const already = await db.query(
+      `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'reaction' AND task_key = ?`,
+      [user_id, String(message_id)]
+    );
+    if (already.length > 0) return; // already claimed this post
+
+    // Do NOT credit yet — wait for user to hit "Verify" in the Mini App.
+    // Just notify them it was detected.
+    await bot.telegram.sendMessage(
+      user_id,
+      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
+    );
+
+  } catch (err) {
+    console.error('Error in reaction handler:', err);
+  }
+});
 // --- GHOST VALIDATOR ENGINE ---
 async function runGhostValidator(ctx) {
     try {
@@ -810,6 +956,24 @@ bot.action('start_bot_reminder', async (ctx) => {
     } catch (err) {
         console.error('[Reminder Button Error]:', err.message);
     }
+});
+bot.on('message_reaction', async (ctx) => {
+  const update = ctx.messageReaction;
+  const userId = update.user.id;
+  const messageId = String(update.message_id);
+  const newReactions = update.new_reaction;
+
+  if (newReactions.length > 0) {
+    const reactedEmoji = newReactions[0].emoji;
+
+    // Save this reaction to the pending table
+    await db.query(
+      `INSERT INTO pending_reactions (user_id, message_id, emoji) 
+       VALUES (?, ?, ?) 
+       ON DUPLICATE KEY UPDATE emoji = ?`,
+      [userId, messageId, reactedEmoji, reactedEmoji]
+    );
+  }
 });
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
@@ -1892,6 +2056,133 @@ app.post('/api/admin/user/set-level', validateAdmin, async (req, res) => {
         res.status(500).json({ error: 'Failed to set user level' });
     }
 });
+// GET /api/secure/daily-tasks/today
+// Returns whichever task is active today — comment OR reaction, never both
+
+app.get('/api/secure/daily-tasks/today', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userRow = await db.query('SELECT level FROM users WHERE user_id = ?', [userId]);
+    const level = userRow[0]?.level || 1;
+    const reward = 50 * level;
+
+    if (activeTask.type === 'comment') {
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const completed = await db.query(
+        `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'comment' AND task_key = ?`,
+        [userId, todayKey]
+      );
+      return res.json({
+        success: true,
+        task_type: 'comment',
+        secret_word: activeTask.word,
+        group_url: process.env.TELEGRAM_GROUP_URL,
+        reward,
+        completed: completed.length > 0
+      });
+    }
+
+    if (activeTask.type === 'reaction') {
+      const completed = await db.query(
+        `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'reaction' AND task_key = ?`,
+        [userId, String(activeTask.messageId)]
+      );
+      return res.json({
+        success: true,
+        task_type: 'reaction',
+        target_emoji: activeTask.emoji,
+        message_id: activeTask.messageId,
+        post_direct_link: `https://t.me/${process.env.TELEGRAM_CHANNEL_NAME}/${activeTask.messageId}`,
+        reward,
+        completed: completed.length > 0
+      });
+    }
+
+    return res.json({ success: false, message: 'No active task configured today' });
+
+  } catch (err) {
+    console.error('Error fetching today\'s task:', err);
+    res.status(500).json({ success: false, message: 'Failed to load task' });
+  }
+});
+// POST /api/secure/daily-tasks/verify-reaction
+app.post('/api/secure/daily-tasks/verify-reaction', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    // 1. Ensure the active task today is indeed a reaction task
+    if (activeTask.type !== 'reaction') {
+      return res.status(400).json({ success: false, message: 'No reaction task active today' });
+    }
+
+    const taskKey = String(activeTask.messageId); // e.g., "987"
+    const requiredEmoji = activeTask.emoji;        // e.g., "🔥"
+
+    // 2. Check if they already claimed this specific reaction task
+    const alreadyClaimed = await db.query(
+      'SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = "reaction" AND task_key = ?',
+      [userId, taskKey]
+    );
+
+    if (alreadyClaimed.length > 0) {
+      return res.status(400).json({ success: false, message: 'Already claimed' });
+    }
+
+    // 3. SECURE CHECK: Did the bot actually log this reaction?
+    const reactionFound = await db.query(
+      'SELECT emoji FROM pending_reactions WHERE user_id = ? AND message_id = ?',
+      [userId, taskKey]
+    );
+
+    if (reactionFound.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No reaction detected yet. Please react to the post first and try again!' 
+      });
+    }
+
+    // 4. Double check if they reacted with the WRONG emoji
+    const actualEmoji = reactionFound[0].emoji;
+    if (actualEmoji !== requiredEmoji) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `You reacted with ${actualEmoji}, but the task requires ${requiredEmoji}!` 
+      });
+    }
+
+    // 5. SUCCESS! Calculate reward & process transactions
+    const userRow = await db.query('SELECT level FROM users WHERE user_id = ?', [userId]);
+    const level = userRow[0]?.level || 1;
+    const reward = 50 * level;
+
+    // A. Record as permanently completed
+    await db.query(
+      'INSERT INTO completed_tasks (user_id, task_type, task_key) VALUES (?, "reaction", ?)',
+      [userId, taskKey]
+    );
+
+    // B. Update user balance
+    await db.query('UPDATE users SET balance = balance + ? WHERE user_id = ?', [reward, userId]);
+
+    // C. Clean up the pending reactions table (no longer needed)
+    await db.query('DELETE FROM pending_reactions WHERE user_id = ? AND message_id = ?', [userId, taskKey]);
+
+    const updated = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
+
+    await sendPushNotification(userId, 'Task Verified! ✅', `+${reward} DASH earned`);
+
+    res.json({ 
+      success: true, 
+      reward_added: reward, 
+      new_balance: updated[0].balance 
+    });
+
+  } catch (err) {
+    console.error('Error verifying reaction:', err);
+    res.status(500).json({ success: false, message: 'Verification failed' });
+  }
+});
+
 app.get('/api/settings', async (req, res) => res.json(await getSettings()));
 app.post('/api/settings/update', validateAdmin, async (req, res) => { await Settings.updateOne({}, req.body); res.json({ success: true }); });
 
