@@ -904,7 +904,10 @@ bot.on('message_reaction', async (ctx) => {
     if (activeTask.type !== 'reaction') return console.warn('❌ Not reaction task');
     if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID: ${ctx.chat.id} vs ${PUBLIC_CHANNEL_ID}`);
 
-    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
+    const reactorId = ctx.update.message_reaction.user?.id ?? ctx.update.message_reaction.actor_chat?.id;
+const { message_id, new_reaction } = ctx.update.message_reaction;
+
+if (!reactorId) return console.warn('❌ No user or actor_chat on reaction — skipping');
     if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message: ${message_id} vs ${activeTask.messageId}`);
 
     const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
