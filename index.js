@@ -908,31 +908,23 @@ bot.on('message_reaction', async (ctx) => {
     if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message: ${message_id} vs ${activeTask.messageId}`);
 
     const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return console.warn(`❌ Wrong emoji`);
-
-    console.log('✅ All checks passed! Creating task entry...');
+    if (!hasTargetEmoji) return console.warn('❌ Wrong emoji');
 
     const taskKey = String(message_id);
-    const completed = await CompletedTask.findOne({ user_id, task_type: 'reaction', task_key: taskKey });
-    if (completed) return console.warn('Already completed');
 
-    let user = await User.findOne({ user_id });
-    if (!user) {
-      user = await User.create({ user_id, balance: 0 });
-    }
+    // Skip if they already claimed today's reward — no need to store a pending record
+    const alreadyClaimed = await CompletedTask.findOne({ userId: user_id, taskType: 'reaction', taskKey });
+    if (alreadyClaimed) return console.warn('Already claimed — skipping pending record');
 
-    const level = user.level || 1;
-    const reward = 50 * level;
-
-    await CompletedTask.create({ user_id, task_type: 'reaction', task_key: taskKey });
-    await User.updateOne({ user_id }, { $inc: { balance: reward } });
-
-    await bot.telegram.sendMessage(
-      user_id,
-      `✅ Reaction verified!\n🎉 +${reward} DASH\n💰 Balance: ${user.balance + reward} DASH`
+    // Upsert (not create): user may un-react/re-react before opening the app to verify,
+    // and the unique index on {userId, messageId} would throw on a plain create() the 2nd time.
+    await PendingReaction.findOneAndUpdate(
+      { userId: user_id, messageId: taskKey },
+      { $set: { emoji: activeTask.emoji, createdAt: new Date() } },
+      { upsert: true, new: true }
     );
 
-    console.log(`✅ Task completed for user ${user_id}`);
+    console.log(`✅ Pending reaction stored for user ${user_id} — waiting for in-app Verify tap`);
 
   } catch (err) {
     console.error('Error in reaction handler:', err.message);
