@@ -268,15 +268,15 @@ const IPTracking = mongoose.model('IPTracking', new mongoose.Schema({
 }));
 
 const PendingReactionSchema = new mongoose.Schema({
-  userId: { type: Number,  required: true  },
-  messageId: { type: String, required: true   },
-  emoji: { type: String,required: true },
-  createdAt: { type: Date, default: Date.now,index: { expires: '48h' } // AUTO-DELETE after 48 hours (Saves DB space!)  }
+  userId: { type: Number, required: true },
+  messageId: { type: String, required: true },
+  emoji: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
 });
-// Match SQL "PRIMARY KEY (user_id, message_id)"
-// This prevents duplicate reaction entries for the same user on the same post.
+// Set TTL index separately (auto-delete after 48 hours)
+PendingReactionSchema.index({ createdAt: 1 }, { expireAfterSeconds: 172800 });
+// Prevent duplicates
 PendingReactionSchema.index({ userId: 1, messageId: 1 }, { unique: true });
-
 const PendingReaction = mongoose.model('PendingReaction', PendingReactionSchema);
 const CompletedTask = mongoose.model('CompletedTask', new mongoose.Schema({
     userId: { type: Number, required: true, index: true },
