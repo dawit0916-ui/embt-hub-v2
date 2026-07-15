@@ -607,7 +607,8 @@ const ipGuardMiddleware = async (req, res, next) => {
     }
 };
 const CONFIG_CHANNEL_ID = -1003931137962; // private CMS channel
-
+const PUBLIC_GROUP_ID = -1002352280130; // your group
+const PUBLIC_CHANNEL_ID = -1001987654321; // your channel
 let activeTask = {
   type: null,        // "comment" | "reaction"
   word: null,
@@ -652,91 +653,7 @@ async function updateDailyConfig() {
 
 setInterval(updateDailyConfig, 5 * 60 * 1000);
 updateDailyConfig();
-const PUBLIC_GROUP_ID = -1002352280130; // your group
 
-bot.on('message', async (ctx) => {
-   
-  console.log('=== MESSAGE RECEIVED ===');
-  console.log('Chat ID:', ctx.chat.id);
-  console.log('Chat Type:', ctx.chat.type);
-  console.log('Chat Title:', ctx.chat.title);
-  console.log('========================');
-
-  try {
-    if (activeTask.type !== 'comment') return;       // not today's task — ignore
-    if (ctx.chat.id !== PUBLIC_GROUP_ID) return;
-    if (!ctx.message.text) return;
-
-    const text = ctx.message.text.trim().toUpperCase(); // case-insensitive
-    if (text !== activeTask.word) return;
-
-    const userId = ctx.from.id;
-    const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-
-    const already = await db.query(
-      `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'comment' AND task_key = ?`,
-      [userId, todayKey]
-    );
-    if (already.length > 0) return; // silently ignore repeats, no spam DM needed
-
-    // Ensure user exists
-    let userRow = await db.query('SELECT level, balance FROM users WHERE user_id = ?', [userId]);
-    if (userRow.length === 0) {
-      await db.query('INSERT INTO users (user_id, username, balance) VALUES (?, ?, 0)', [userId, ctx.from.username || null]);
-      userRow = [{ level: 1, balance: 0 }];
-    }
-
-    const level = userRow[0].level || 1;
-    const reward = 50 * level; // 50–500
-
-    await db.query(
-      `INSERT INTO completed_tasks (user_id, task_type, task_key) VALUES (?, 'comment', ?)`,
-      [userId, todayKey]
-    );
-    await db.query('UPDATE users SET balance = balance + ? WHERE user_id = ?', [reward, userId]);
-
-    const updated = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
-
-    // NOTE: message is NOT deleted, per your spec
-    await bot.telegram.sendMessage(
-      userId,
-      `✅ Task verified!\n🎉 +${reward} DASH\n💰 Balance: ${updated[0].balance} DASH`
-    );
-
-  } catch (err) {
-    console.error('Error in comment task handler:', err);
-  }
-});
-const PUBLIC_CHANNEL_ID = -1001987654321; // your channel
-
-bot.on('message_reaction', async (ctx) => {
-  try {
-    if (activeTask.type !== 'reaction') return;
-    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return;
-
-    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
-    if (message_id !== activeTask.messageId) return;
-
-    const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return;
-
-    const already = await db.query(
-      `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'reaction' AND task_key = ?`,
-      [user_id, String(message_id)]
-    );
-    if (already.length > 0) return; // already claimed this post
-
-    // Do NOT credit yet — wait for user to hit "Verify" in the Mini App.
-    // Just notify them it was detected.
-    await bot.telegram.sendMessage(
-      user_id,
-      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
-    );
-
-  } catch (err) {
-    console.error('Error in reaction handler:', err);
-  }
-});
 // --- GHOST VALIDATOR ENGINE ---
 async function runGhostValidator(ctx) {
     try {
@@ -930,7 +847,80 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
+bot.on('message', async (ctx) => {
+  try {
+    if (activeTask.type !== 'comment') return;       // not today's task — ignore
+    if (ctx.chat.id !== PUBLIC_GROUP_ID) return;
+    if (!ctx.message.text) return;
 
+    const text = ctx.message.text.trim().toUpperCase(); // case-insensitive
+    if (text !== activeTask.word) return;
+
+    const userId = ctx.from.id;
+    const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+    const already = await db.query(
+      `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'comment' AND task_key = ?`,
+      [userId, todayKey]
+    );
+    if (already.length > 0) return; // silently ignore repeats, no spam DM needed
+
+    // Ensure user exists
+    let userRow = await db.query('SELECT level, balance FROM users WHERE user_id = ?', [userId]);
+    if (userRow.length === 0) {
+      await db.query('INSERT INTO users (user_id, username, balance) VALUES (?, ?, 0)', [userId, ctx.from.username || null]);
+      userRow = [{ level: 1, balance: 0 }];
+    }
+
+    const level = userRow[0].level || 1;
+    const reward = 50 * level; // 50–500
+
+    await db.query(
+      `INSERT INTO completed_tasks (user_id, task_type, task_key) VALUES (?, 'comment', ?)`,
+      [userId, todayKey]
+    );
+    await db.query('UPDATE users SET balance = balance + ? WHERE user_id = ?', [reward, userId]);
+
+    const updated = await db.query('SELECT balance FROM users WHERE user_id = ?', [userId]);
+
+    // NOTE: message is NOT deleted, per your spec
+    await bot.telegram.sendMessage(
+      userId,
+      `✅ Task verified!\n🎉 +${reward} DASH\n💰 Balance: ${updated[0].balance} DASH`
+    );
+
+  } catch (err) {
+    console.error('Error in comment task handler:', err);
+  }
+});
+bot.on('message_reaction', async (ctx) => {
+  try {
+    if (activeTask.type !== 'reaction') return;
+    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return;
+
+    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
+    if (message_id !== activeTask.messageId) return;
+
+    const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
+    if (!hasTargetEmoji) return;
+
+    const already = await db.query(
+      `SELECT id FROM completed_tasks WHERE user_id = ? AND task_type = 'reaction' AND task_key = ?`,
+      [user_id, String(message_id)]
+    );
+    if (already.length > 0) return; // already claimed this post
+
+    // Do NOT credit yet — wait for user to hit "Verify" in the Mini App.
+    // Just notify them it was detected.
+    await bot.telegram.sendMessage(
+      user_id,
+      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
+    );
+
+  } catch (err) {
+    console.error('Error in reaction handler:', err);
+  }
+});
 // Inline button handler for reminder start button
 bot.action('start_bot_reminder', async (ctx) => {
     try {
