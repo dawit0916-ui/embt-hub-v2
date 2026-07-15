@@ -655,6 +655,13 @@ updateDailyConfig();
 const PUBLIC_GROUP_ID = -1002352280130; // your group
 
 bot.on('message', async (ctx) => {
+   
+  console.log('=== MESSAGE RECEIVED ===');
+  console.log('Chat ID:', ctx.chat.id);
+  console.log('Chat Type:', ctx.chat.type);
+  console.log('Chat Title:', ctx.chat.title);
+  console.log('========================');
+
   try {
     if (activeTask.type !== 'comment') return;       // not today's task — ignore
     if (ctx.chat.id !== PUBLIC_GROUP_ID) return;
@@ -695,9 +702,6 @@ bot.on('message', async (ctx) => {
       userId,
       `✅ Task verified!\n🎉 +${reward} DASH\n💰 Balance: ${updated[0].balance} DASH`
     );
-
-    // Push notification (if you have a push service wired to user_id)
-    await sendPushNotification(userId, 'Task Verified! ✅', `+${reward} DASH earned`);
 
   } catch (err) {
     console.error('Error in comment task handler:', err);
@@ -957,32 +961,7 @@ bot.action('start_bot_reminder', async (ctx) => {
         console.error('[Reminder Button Error]:', err.message);
     }
 });
-bot.on('message_reaction', async (ctx) => {
-  const update = ctx.messageReaction;
-  const userId = update.user.id;
-  const messageId = String(update.message_id);
-  const newReactions = update.new_reaction;
 
-  if (newReactions.length > 0) {
-    const reactedEmoji = newReactions[0].emoji;
-
-    // Save this reaction to the pending table
-    await db.query(
-      `INSERT INTO pending_reactions (user_id, message_id, emoji) 
-       VALUES (?, ?, ?) 
-       ON DUPLICATE KEY UPDATE emoji = ?`,
-      [userId, messageId, reactedEmoji, reactedEmoji]
-    );
-  }
-});
-// TEMP TEST: Log Chat ID for any incoming message
-bot.on('message', async (ctx) => {
-  console.log('=== MESSAGE RECEIVED ===');
-  console.log('Chat ID:', ctx.chat.id);
-  console.log('Chat Type:', ctx.chat.type);
-  console.log('Chat Title:', ctx.chat.title);
-  console.log('========================');
-});
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
 // ==========================================================================
