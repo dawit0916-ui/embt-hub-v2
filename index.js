@@ -975,6 +975,14 @@ bot.on('message_reaction', async (ctx) => {
     );
   }
 });
+// TEMP TEST: Log Chat ID for any incoming message
+bot.on('message', async (ctx) => {
+  console.log('=== MESSAGE RECEIVED ===');
+  console.log('Chat ID:', ctx.chat.id);
+  console.log('Chat Type:', ctx.chat.type);
+  console.log('Chat Title:', ctx.chat.title);
+  console.log('========================');
+});
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
 // ==========================================================================
