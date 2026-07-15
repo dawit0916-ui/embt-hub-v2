@@ -887,7 +887,9 @@ bot.on('message', async (ctx) => {
   }
 });
 
+// ===== REACTION TASK LISTENER (DEBUG) =====
 bot.on('message_reaction', async (ctx) => {
+  try {
     console.log('=== REACTION DETECTED ===');
     console.log('Chat ID:', ctx.chat.id);
     console.log('Expected Channel ID:', PUBLIC_CHANNEL_ID);
@@ -899,35 +901,41 @@ bot.on('message_reaction', async (ctx) => {
     console.log('Expected Emoji:', activeTask.emoji);
     console.log('========================');
 
-  try {
-    if (activeTask.type !== 'reaction') return;
-    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return;
+    if (activeTask.type !== 'reaction') return console.warn('❌ Not reaction task');
+    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID: ${ctx.chat.id} vs ${PUBLIC_CHANNEL_ID}`);
 
     const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
-    if (message_id !== activeTask.messageId) return;
+    if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message: ${message_id} vs ${activeTask.messageId}`);
 
     const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return;
+    if (!hasTargetEmoji) return console.warn(`❌ Wrong emoji`);
 
-    const already = await CompletedTask.findOne({ userId: user_id, taskType: 'reaction', taskKey: String(message_id) });
-    if (already) return; // already claimed this post
+    console.log('✅ All checks passed! Creating task entry...');
 
-    // Record the detected reaction so the Mini App's Verify button can find it
-    await PendingReaction.findOneAndUpdate(
-      { userId: user_id, messageId: String(message_id) },
-      { emoji: activeTask.emoji, createdAt: new Date() },
-      { upsert: true }
-    );
+    const taskKey = String(message_id);
+    const completed = await CompletedTask.findOne({ user_id, task_type: 'reaction', task_key: taskKey });
+    if (completed) return console.warn('Already completed');
 
-    // Do NOT credit yet — wait for user to hit "Verify" in the Mini App.
-    // Just notify them it was detected.
+    let user = await User.findOne({ user_id });
+    if (!user) {
+      user = await User.create({ user_id, balance: 0 });
+    }
+
+    const level = user.level || 1;
+    const reward = 50 * level;
+
+    await CompletedTask.create({ user_id, task_type: 'reaction', task_key: taskKey });
+    await User.updateOne({ user_id }, { $inc: { balance: reward } });
+
     await bot.telegram.sendMessage(
       user_id,
-      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
+      `✅ Reaction verified!\n🎉 +${reward} DASH\n💰 Balance: ${user.balance + reward} DASH`
     );
 
+    console.log(`✅ Task completed for user ${user_id}`);
+
   } catch (err) {
-    console.error('Error in reaction handler:', err);
+    console.error('Error in reaction handler:', err.message);
   }
 });
 // Inline button handler for reminder start button
