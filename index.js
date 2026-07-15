@@ -2059,7 +2059,7 @@ app.post('/api/admin/user/set-level', validateAdmin, async (req, res) => {
 // GET /api/secure/daily-tasks/today
 // Returns whichever task is active today — comment OR reaction, never both
 
-app.get('/api/secure/daily-tasks/today', authenticateUser, async (req, res) => {
+app.get('/api/secure/daily-tasks/today', validateInitData, async (req, res) => {
   try {
     const userId = req.user.id;
     const userRow = await db.query('SELECT level FROM users WHERE user_id = ?', [userId]);
@@ -2106,7 +2106,7 @@ app.get('/api/secure/daily-tasks/today', authenticateUser, async (req, res) => {
   }
 });
 // POST /api/secure/daily-tasks/verify-reaction
-app.post('/api/secure/daily-tasks/verify-reaction', authenticateUser, async (req, res) => {
+app.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (req, res) => {
   try {
     const userId = req.user.id;
 
