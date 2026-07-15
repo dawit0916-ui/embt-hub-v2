@@ -888,6 +888,17 @@ bot.on('message', async (ctx) => {
 });
 
 bot.on('message_reaction', async (ctx) => {
+    console.log('=== REACTION DETECTED ===');
+    console.log('Chat ID:', ctx.chat.id);
+    console.log('Expected Channel ID:', PUBLIC_CHANNEL_ID);
+    console.log('Active Task Type:', activeTask.type);
+    console.log('User ID:', ctx.update.message_reaction.user_id);
+    console.log('Message ID:', ctx.update.message_reaction.message_id);
+    console.log('Expected Message ID:', activeTask.messageId);
+    console.log('New Reactions:', ctx.update.message_reaction.new_reaction);
+    console.log('Expected Emoji:', activeTask.emoji);
+    console.log('========================');
+
   try {
     if (activeTask.type !== 'reaction') return;
     if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return;
