@@ -892,42 +892,33 @@ bot.on('message_reaction', async (ctx) => {
   try {
     console.log('=== REACTION DETECTED ===');
     console.log('Chat ID:', ctx.chat.id);
-    console.log('Expected Channel ID:', PUBLIC_CHANNEL_ID);
     console.log('Active Task Type:', activeTask.type);
-    console.log('User ID:', ctx.update.message_reaction.user_id);
-    console.log('Message ID:', ctx.update.message_reaction.message_id);
-    console.log('Expected Message ID:', activeTask.messageId);
-    console.log('New Reactions:', ctx.update.message_reaction.new_reaction);
-    console.log('Expected Emoji:', activeTask.emoji);
-    console.log('========================');
-
+    
     if (activeTask.type !== 'reaction') return console.warn('❌ Not reaction task');
-    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID: ${ctx.chat.id} vs ${PUBLIC_CHANNEL_ID}`);
+    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID`);
 
-    const reactorId = ctx.update.message_reaction.user?.id ?? ctx.update.message_reaction.actor_chat?.id;
-const { message_id, new_reaction } = ctx.update.message_reaction;
-
-if (!reactorId) return console.warn('❌ No user or actor_chat on reaction — skipping');
-    if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message: ${message_id} vs ${activeTask.messageId}`);
+    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
+    if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message`);
 
     const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return console.warn('❌ Wrong emoji');
+    if (!hasTargetEmoji) return console.warn(`❌ Wrong emoji`);
 
-    const taskKey = String(message_id);
+    console.log(`✅ Logging reaction to PendingReaction: user=${user_id}, msg=${message_id}, emoji=${activeTask.emoji}`);
 
-    // Skip if they already claimed today's reward — no need to store a pending record
-    const alreadyClaimed = await CompletedTask.findOne({ userId: user_id, taskType: 'reaction', taskKey });
-    if (alreadyClaimed) return console.warn('Already claimed — skipping pending record');
-
-    // Upsert (not create): user may un-react/re-react before opening the app to verify,
-    // and the unique index on {userId, messageId} would throw on a plain create() the 2nd time.
+    // WRITE TO PENDING REACTIONS (not CompletedTask)
     await PendingReaction.findOneAndUpdate(
-      { userId: user_id, messageId: taskKey },
-      { $set: { emoji: activeTask.emoji, createdAt: new Date() } },
+      { userId: user_id, messageId: String(message_id) },
+      { userId: user_id, messageId: String(message_id), emoji: activeTask.emoji },
       { upsert: true, new: true }
     );
 
-    console.log(`✅ Pending reaction stored for user ${user_id} — waiting for in-app Verify tap`);
+    // NOTIFY USER
+    await bot.telegram.sendMessage(
+      user_id,
+      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
+    );
+
+    console.log(`✅ Reaction logged for user ${user_id}`);
 
   } catch (err) {
     console.error('Error in reaction handler:', err.message);
