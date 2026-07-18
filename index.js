@@ -10,7 +10,6 @@ require('dotenv').config();
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
-const ADMIN_ID = 7329000880; 
 
 app.use(cors()); 
 app.use(express.json());
@@ -460,7 +459,9 @@ function verifyTelegramInitData(rawInitData) {
 }
 
 const validateInitData = async (req, res, next) => {
-    const rawInitData = req.headers['x-telegram-init-data'] || req.headers['X-Telegram-Init-Data'];
+    const rawInitData = req.headers['x-telegram-init-data']
+        || req.headers['X-Telegram-Init-Data']
+        || req.query.initData;
     const user = verifyTelegramInitData(rawInitData);
 
     if (!user) {
@@ -468,7 +469,6 @@ const validateInitData = async (req, res, next) => {
         return res.status(403).json({ error: "Signature hash mismatch or expired session state." });
     }
 
-    // REPLACE WITH:
     req.tgUser = user;
     ipGuardMiddleware(req, res, next);
 };
@@ -915,53 +915,6 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
-bot.command('shop', async (ctx) => {
-    try {
-        const userId = ctx.from.id;
-        const user = await User.findOne({ user_id: userId });
- 
-        if (!user) {
-            return ctx.reply('❌ User not found');
-        }
- 
-        const purchaseCount = await UserPurchase.countDocuments({
-            userId,
-            status: 'active'
-        });
- 
-        const totalProducts = await ShopProduct.countDocuments({ active: true });
- 
-        const message = `
-🛍️ *DASH EARN SHOP*
- 
-💰 Your Balance: *${user.balance} DASH*
-📚 Your Purchases: *${purchaseCount}*
-📦 Available Products: *${totalProducts}*
- 
-✨ *Shop Features:*
-📚 Professional Courses
-💻 Ready-to-use APKs
-🔒 Secure Video Streaming
-⭐ Lifetime Access
- 
-📲 Open the Shop tab in the app to browse!
-        `;
- 
-        await ctx.reply(message, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🛍️ Open Shop', url: process.env.MINI_APP_URL || 'https://mini-app-ui-embta.vercel.app' }],
-                    [{ text: '📚 View Courses', callback_data: 'shop_courses' }],
-                    [{ text: '💰 Check Balance', callback_data: 'check_balance' }]
-                ]
-            }
-        });
-    } catch (err) {
-        console.error('[Shop command error]:', err);
-        ctx.reply('❌ Error loading shop info');
-    }
-});
 bot.command('uploadcourse', async (ctx) => {
     if (!admins.includes(ctx.from.id)) {
         return ctx.reply('❌ Admin only');
@@ -990,6 +943,89 @@ Questions? Contact @support
     `;
  
     ctx.reply(helpMsg, { parse_mode: 'Markdown' });
+});
+bot.command('shop', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const user = await User.findOne({ user_id: userId });
+ 
+        if (!user) {
+            return ctx.reply('❌ User not found');
+        }
+ 
+        const purchaseCount = await UserPurchase.countDocuments({
+            userId,
+            status: 'active'
+        });
+ 
+        const totalProducts = await ShopProduct.countDocuments({ active: true });
+        const MINI_APP_URL = process.env.MINI_APP_URL || 'https://mini-app-ui-embta.vercel.app';
+
+      const message = `
+🛍️ *DASH EARN SHOP*
+ 
+💰 Your Balance: *${user.balance} DASH*
+📚 Your Purchases: *${purchaseCount}*
+📦 Available Products: *${totalProducts}*
+ 
+✨ *Shop Features:*
+📚 Professional Courses
+💻 Ready-to-use APKs
+🔒 Secure Video Streaming
+⭐ Lifetime Access
+ 
+📲 Open the Shop tab in the app to browse!
+    `;
+
+await ctx.reply(message, {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard([
+        [Markup.button.webApp('🛍️ Open Shop', MINI_APP_URL)],
+        [Markup.button.callback('📚 View Courses', 'shop_courses')],
+        [Markup.button.callback('💰 Check Balance', 'check_balance')]
+    ])
+});
+    } catch (err) {
+        console.error('[Shop command error]:', err);
+        ctx.reply('❌ Error loading shop info');
+    }
+});
+// ===== REACTION TASK LISTENER (DEBUG) =====
+bot.on('message_reaction', async (ctx) => {
+  try {
+    console.log('=== REACTION DETECTED ===');
+    console.log('Chat ID:', ctx.chat.id);
+    console.log('Active Task Type:', activeTask.type);
+    
+    if (activeTask.type !== 'reaction') return console.warn('❌ Not reaction task');
+    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID`);
+
+    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
+    if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message`);
+
+    const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
+    if (!hasTargetEmoji) return console.warn(`❌ Wrong emoji`);
+
+    console.log(`✅ Logging reaction to PendingReaction: user=${user_id}, msg=${message_id}, emoji=${activeTask.emoji}`);
+
+    // WRITE TO PENDING REACTIONS (not CompletedTask)
+    await PendingReaction.findOneAndUpdate(
+      { userId: user_id, messageId: String(message_id) },
+      { userId: user_id, messageId: String(message_id), emoji: activeTask.emoji },
+      { upsert: true, new: true }
+    );
+
+    // NOTIFY USER
+    await bot.telegram.sendMessage(
+      user_id,
+      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
+    );
+
+    console.log(`✅ Reaction logged for user ${user_id}`);
+
+  } catch (err) {
+    console.error('Error in reaction handler:', err.message);
+  }
 });
 bot.on('message', async (ctx, next) => {
   try {
@@ -1031,43 +1067,6 @@ bot.on('message', async (ctx, next) => {
   }
 });
 
-// ===== REACTION TASK LISTENER (DEBUG) =====
-bot.on('message_reaction', async (ctx) => {
-  try {
-    console.log('=== REACTION DETECTED ===');
-    console.log('Chat ID:', ctx.chat.id);
-    console.log('Active Task Type:', activeTask.type);
-    
-    if (activeTask.type !== 'reaction') return console.warn('❌ Not reaction task');
-    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID`);
-
-    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
-    if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message`);
-
-    const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return console.warn(`❌ Wrong emoji`);
-
-    console.log(`✅ Logging reaction to PendingReaction: user=${user_id}, msg=${message_id}, emoji=${activeTask.emoji}`);
-
-    // WRITE TO PENDING REACTIONS (not CompletedTask)
-    await PendingReaction.findOneAndUpdate(
-      { userId: user_id, messageId: String(message_id) },
-      { userId: user_id, messageId: String(message_id), emoji: activeTask.emoji },
-      { upsert: true, new: true }
-    );
-
-    // NOTIFY USER
-    await bot.telegram.sendMessage(
-      user_id,
-      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
-    );
-
-    console.log(`✅ Reaction logged for user ${user_id}`);
-
-  } catch (err) {
-    console.error('Error in reaction handler:', err.message);
-  }
-});
 // Inline button handler for reminder start button
 bot.action('start_bot_reminder', async (ctx) => {
     try {
