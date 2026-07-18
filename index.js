@@ -890,7 +890,7 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
-bot.on('message', async (ctx) => {
+bot.on('message', async (ctx, next) => {
   try {
     if (activeTask.type !== 'comment') return next();       // not today's task — ignore
     if (ctx.chat.id !== PUBLIC_GROUP_ID) return next();
