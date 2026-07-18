@@ -1068,11 +1068,11 @@ Or use the web admin panel at your Mini App.
         // Optional: Forward to storage channel
         if (STORAGE_CHANNEL_ID) {
             try {
-                await ctx.forwardMessage(STORAGE_CHANNEL_ID);
+                const forwarded = await ctx.forwardMessage(STORAGE_CHANNEL_ID);
                 await bot.telegram.sendMessage(
                     STORAGE_CHANNEL_ID,
                     `🎬 *COURSE VIDEO UPLOAD*\n👤 Admin: @${ctx.from.username || ctx.from.first_name}\n📝 File ID: \`${fileId}\`\n⏱️ Duration: ${durationStr}`,
-                    { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id }
+                    { parse_mode: 'Markdown', reply_to_message_id: forwarded.message_id }
                 );
             } catch (e) {
                 console.log('[Storage channel skip]:', e.message);
@@ -1086,14 +1086,22 @@ Or use the web admin panel at your Mini App.
 });
  
 // Step 2: Admin sends metadata as JSON
-bot.on('text', async (ctx) => {
+bot.on('text', async (ctx, next) => {
     try {
         if (!adminVideoSessions.has(ctx.from.id)) {
-            return; // No active session, ignore
+            return next(); // No active session — let commands/other handlers see this
         }
 
         const session = adminVideoSessions.get(ctx.from.id);
-        const text = ctx.message.text.trim();
+        const rawText = ctx.message.text.trim();
+
+        // Sanitize: strip markdown code fences and normalize smart/curly quotes
+        const text = rawText
+            .replace(/```json\n?/g, '')
+            .replace(/```/g, '')
+            .replace(/[\u201C\u201D]/g, '"')
+            .replace(/[\u2018\u2019]/g, "'")
+            .trim();
 
         let metadata;
         try {
@@ -1202,25 +1210,58 @@ Video is now ready to stream!
 });
 bot.on('document', async (ctx) => {
     try {
-        // Security check
         if (!admins.includes(ctx.from.id)) {
-            return ctx.reply('❌ Only admins can upload APKs.');
+            return ctx.reply('❌ Only admins can upload files.');
         }
  
         const doc = ctx.message.document;
         const fileId = doc.file_id;
         const fileName = doc.file_name || 'file';
         const fileSize = doc.file_size ? (doc.file_size / 1024 / 1024).toFixed(2) + ' MB' : 'unknown';
+        const lower = fileName.toLowerCase();
+
+        const videoExtensions = ['.mp4', '.mov', '.mkv', '.avi', '.webm'];
+        if (videoExtensions.some(ext => lower.endsWith(ext))) {
+            adminVideoSessions.set(ctx.from.id, {
+                fileId: fileId,
+                fileName: fileName,
+                duration: '0:00',
+                timestamp: new Date()
+            });
+
+            const videoResponseMsg = `
+🎬 *VIDEO CAPTURED (as document)*
  
-        // Validate APK
-        if (!fileName.toLowerCase().endsWith('.apk')) {
-            await ctx.reply('❌ Only .apk files are supported.', {
+📹 File ID: \`${fileId}\`
+📝 Filename: \`${fileName}\`
+ 
+*Next Steps:* Reply with JSON:
+\`\`\`json
+{
+  "courseId": "course-001",
+  "moduleName": "Module 1: Getting Started",
+  "lessonName": "Chapter 1: Setup",
+  "order": 1
+}
+\`\`\`
+            `;
+
+            await ctx.reply(videoResponseMsg, {
+                parse_mode: 'Markdown',
+                reply_to_message_id: ctx.message.message_id
+            });
+
+            console.log(`[Video Upload as Document] Admin ${ctx.from.username || ctx.from.id} uploaded: ${fileName}`);
+            return;
+        }
+
+        if (!lower.endsWith('.apk')) {
+            await ctx.reply('❌ Only .apk or video files are supported.', {
                 reply_to_message_id: ctx.message.message_id
             });
             return;
         }
  
-        // Store session
         adminVideoSessions.set(ctx.from.id, {
             fileId: fileId,
             fileName: fileName,
@@ -1255,8 +1296,8 @@ bot.on('document', async (ctx) => {
         console.log(`[APK Upload] Admin ${ctx.from.username} uploaded: ${fileName}`);
  
     } catch (err) {
-        console.error('[APK handler error]:', err);
-        ctx.reply('❌ Error processing APK.');
+        console.error('[Document handler error]:', err);
+        ctx.reply('❌ Error processing file.');
     }
 });
 bot.command('shop', async (ctx) => {
