@@ -811,6 +811,7 @@ async function sendReminderMessage(userId) {
         return false;
     }
 }
+
 function getNextResetTime(taskType) {
     const now = new Date();
     
@@ -821,6 +822,25 @@ function getNextResetTime(taskType) {
         return tomorrow;
     }
     return now;
+}
+async function askForCourse(ctx) {
+    const courses = await ShopProduct.find({ type: 'course', active: true }).select('_id title').limit(20);
+    const session = adminVideoSessions.get(ctx.from.id);
+
+    if (!courses.length) {
+        adminVideoSessions.delete(ctx.from.id);
+        await ctx.reply('❌ No courses found. Create a course first via the admin panel, then upload the video again.');
+        return;
+    }
+
+    session.courseOptions = courses.map(c => c._id.toString());
+
+    const list = courses.map((c, i) => `${i + 1}. ${c.title}`).join('\n');
+
+    await ctx.reply(
+        `🎬 *VIDEO CAPTURED*\n\n📝 Filename: \`${session.fileName}\`\n⏱️ Duration: ${session.duration}\n\n*Step 1/4 — Which course does this lesson belong to?*\nReply with the number:\n\n${list}\n\nOr /cancel to stop.`,
+        { parse_mode: 'Markdown' }
+    );
 }
 async function checkAndSendReminders() {
     try {
@@ -894,6 +914,82 @@ bot.start(async (ctx) => {
         console.error("START ERROR:", error);
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
+});
+bot.command('shop', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const user = await User.findOne({ user_id: userId });
+ 
+        if (!user) {
+            return ctx.reply('❌ User not found');
+        }
+ 
+        const purchaseCount = await UserPurchase.countDocuments({
+            userId,
+            status: 'active'
+        });
+ 
+        const totalProducts = await ShopProduct.countDocuments({ active: true });
+ 
+        const message = `
+🛍️ *DASH EARN SHOP*
+ 
+💰 Your Balance: *${user.balance} DASH*
+📚 Your Purchases: *${purchaseCount}*
+📦 Available Products: *${totalProducts}*
+ 
+✨ *Shop Features:*
+📚 Professional Courses
+💻 Ready-to-use APKs
+🔒 Secure Video Streaming
+⭐ Lifetime Access
+ 
+📲 Open the Shop tab in the app to browse!
+        `;
+ 
+        await ctx.reply(message, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🛍️ Open Shop', url: process.env.MINI_APP_URL || 'https://mini-app-ui-embta.vercel.app' }],
+                    [{ text: '📚 View Courses', callback_data: 'shop_courses' }],
+                    [{ text: '💰 Check Balance', callback_data: 'check_balance' }]
+                ]
+            }
+        });
+    } catch (err) {
+        console.error('[Shop command error]:', err);
+        ctx.reply('❌ Error loading shop info');
+    }
+});
+bot.command('uploadcourse', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) {
+        return ctx.reply('❌ Admin only');
+    }
+ 
+    const helpMsg = `
+📹 *COURSE VIDEO UPLOAD GUIDE*
+ 
+1️⃣ Send a video file (or forward from channel)
+2️⃣ Bot will reply with file_id
+3️⃣ Send course metadata as JSON:
+ 
+\`\`\`json
+{
+  "courseId": "ObjectId or string ID",
+  "moduleName": "Module 1: Basics",
+  "lessonName": "Getting Started",
+  "order": 1
+}
+\`\`\`
+ 
+Or create directly via web admin panel:
+Shop Manager → Courses → Add Lesson
+ 
+Questions? Contact @support
+    `;
+ 
+    ctx.reply(helpMsg, { parse_mode: 'Markdown' });
 });
 bot.on('message', async (ctx, next) => {
   try {
@@ -1013,59 +1109,27 @@ const adminVideoSessions = new Map();
 // Step 1: Admin sends video to bot
 bot.on('video', async (ctx) => {
     try {
-        // Security: only admins can upload course videos
         if (!admins.includes(ctx.from.id)) {
             return ctx.reply('❌ Only admins can upload course videos.');
         }
- 
+
         const video = ctx.message.video;
         const fileId = video.file_id;
         const fileName = video.file_name || 'video.mp4';
         const duration = video.duration || 0;
- 
-        // Format duration for display
         const durationStr = Math.floor(duration / 60) + ':' + String(duration % 60).padStart(2, '0');
- 
-        // Store session temporarily
+
         adminVideoSessions.set(ctx.from.id, {
             fileId: fileId,
             fileName: fileName,
             duration: durationStr,
-            timestamp: new Date()
+            timestamp: new Date(),
+            step: 'awaiting_course',
+            data: {}
         });
- 
-        // Step 1 response: Show file_id and ask for course/lesson info
-        const responseMsg = `
-🎬 *VIDEO CAPTURED*
- 
-📹 File ID: \`${fileId}\`
-📝 Filename: \`${fileName}\`
-⏱️ Duration: ${durationStr}
- 
-*Next Steps:* Reply with JSON:
-\`\`\`json
-{
-  "courseId": "course-001",
-  "moduleName": "Module 1: Getting Started",
-  "lessonName": "Chapter 1: Setup",
-  "order": 1
-}
-\`\`\`
- 
-Or use the web admin panel at your Mini App.
-        `;
- 
-        const sessionMsg = await ctx.reply(responseMsg, {
-            parse_mode: 'Markdown',
-            reply_to_message_id: ctx.message.message_id
-        });
- 
-        // Store message_id for reference
-        adminVideoSessions.get(ctx.from.id).messageId = sessionMsg.message_id;
- 
+
         console.log(`[Video Upload] Admin ${ctx.from.username || ctx.from.id} uploaded: ${fileName}`);
- 
-        // Optional: Forward to storage channel
+
         if (STORAGE_CHANNEL_ID) {
             try {
                 const forwarded = await ctx.forwardMessage(STORAGE_CHANNEL_ID);
@@ -1078,7 +1142,9 @@ Or use the web admin panel at your Mini App.
                 console.log('[Storage channel skip]:', e.message);
             }
         }
- 
+
+        await askForCourse(ctx);
+
     } catch (err) {
         console.error('[Video handler error]:', err);
         ctx.reply('❌ Error processing video. Check server logs.');
@@ -1089,123 +1155,149 @@ Or use the web admin panel at your Mini App.
 bot.on('text', async (ctx, next) => {
     try {
         if (!adminVideoSessions.has(ctx.from.id)) {
-            return next(); // No active session — let commands/other handlers see this
+            return next();
         }
 
         const session = adminVideoSessions.get(ctx.from.id);
-        const rawText = ctx.message.text.trim();
+        const input = ctx.message.text.trim();
 
-        // Sanitize: strip markdown code fences and normalize smart/curly quotes
-        const text = rawText
-            .replace(/```json\n?/g, '')
-            .replace(/```/g, '')
-            .replace(/[\u201C\u201D]/g, '"')
-            .replace(/[\u2018\u2019]/g, "'")
-            .trim();
-
-        let metadata;
-        try {
-            metadata = JSON.parse(text);
-        } catch (e) {
-            const helpJson = session.type === 'apk'
-                ? '{"title": "...", "description": "...", "price": 0, "category": "..."}'
-                : '{"courseId": "...", "moduleName": "...", "lessonName": "...", "order": 1}';
-            await ctx.reply(`❌ Invalid format. Please send valid JSON:\n\`\`\`json\n${helpJson}\n\`\`\``, {
-                parse_mode: 'Markdown',
-                reply_to_message_id: ctx.message.message_id
-            });
+        if (input.toLowerCase() === '/cancel') {
+            adminVideoSessions.delete(ctx.from.id);
+            await ctx.reply('❌ Upload cancelled.');
             return;
         }
 
-        // ===== APK PRODUCT FLOW =====
+        // ===== APK WIZARD =====
         if (session.type === 'apk') {
-            if (!metadata.title || !metadata.description || metadata.price == null || !metadata.category) {
-                await ctx.reply('❌ Missing required fields: title, description, price, category', {
-                    reply_to_message_id: ctx.message.message_id
-                });
+            switch (session.step) {
+                case 'awaiting_title':
+                    session.data.title = input;
+                    session.step = 'awaiting_description';
+                    await ctx.reply('*Step 2/4 — Description?*\nReply with a short description, or /cancel.', { parse_mode: 'Markdown' });
+                    return;
+
+                case 'awaiting_description':
+                    session.data.description = input;
+                    session.step = 'awaiting_price';
+                    await ctx.reply('*Step 3/4 — Price?*\nReply with a number (DASH), or /cancel.', { parse_mode: 'Markdown' });
+                    return;
+
+                case 'awaiting_price': {
+                    const price = Number(input);
+                    if (isNaN(price) || price < 0) {
+                        await ctx.reply('❌ Please send a valid positive number for price.');
+                        return;
+                    }
+                    session.data.price = price;
+                    session.step = 'awaiting_category';
+                    await ctx.reply('*Step 4/4 — Category?*\nReply with a category (e.g. Utility, Game, Tool), or /cancel.', { parse_mode: 'Markdown' });
+                    return;
+                }
+
+                case 'awaiting_category': {
+                    session.data.category = input;
+
+                    const product = await ShopProduct.create({
+                        title: session.data.title,
+                        description: session.data.description,
+                        price: session.data.price,
+                        category: session.data.category,
+                        type: 'apk',
+                        telegram_file_id: session.fileId,
+                        fileName: session.fileName,
+                        fileSize: session.fileSize
+                    });
+
+                    await ctx.reply(
+                        `✅ *APK PRODUCT CREATED*\n\n📦 Title: ${session.data.title}\n💰 Price: ${session.data.price}\n🏷 Category: ${session.data.category}\n🔗 Product ID: \`${product._id}\``,
+                        { parse_mode: 'Markdown' }
+                    );
+
+                    await logAdminAction(ctx.from, 'shop_apk_created', `Created APK product: ${session.data.title}`);
+                    adminVideoSessions.delete(ctx.from.id);
+                    console.log(`[APK Product Created] ${session.data.title}`);
+                    return;
+                }
+
+                default:
+                    adminVideoSessions.delete(ctx.from.id);
+                    return;
+            }
+        }
+
+        // ===== VIDEO LESSON WIZARD (default) =====
+        switch (session.step) {
+            case 'awaiting_course': {
+                const idx = parseInt(input, 10) - 1;
+                if (isNaN(idx) || !session.courseOptions || !session.courseOptions[idx]) {
+                    await ctx.reply('❌ Please reply with a valid number from the list above, or /cancel.');
+                    return;
+                }
+                session.data.courseId = session.courseOptions[idx];
+                session.step = 'awaiting_module';
+                await ctx.reply('*Step 2/4 — Module name?*\nE.g. "Module 1: Getting Started". Or /cancel.', { parse_mode: 'Markdown' });
                 return;
             }
 
-            const product = await ShopProduct.create({
-                title: metadata.title,
-                description: metadata.description,
-                price: metadata.price,
-                category: metadata.category,
-                type: 'apk',
-                telegram_file_id: session.fileId,
-                fileName: session.fileName,
-                fileSize: session.fileSize
-            });
+            case 'awaiting_module':
+                session.data.moduleName = input;
+                session.step = 'awaiting_lesson';
+                await ctx.reply('*Step 3/4 — Lesson name?*\nE.g. "Chapter 1: Setup". Or /cancel.', { parse_mode: 'Markdown' });
+                return;
 
-            const successMsg = `
-✅ *APK PRODUCT CREATED*
- 
-📦 Title: ${metadata.title}
-💰 Price: ${metadata.price}
-🏷 Category: ${metadata.category}
-🔗 Product ID: \`${product._id}\`
-            `;
+            case 'awaiting_lesson':
+                session.data.lessonName = input;
+                session.step = 'awaiting_order';
+                await ctx.reply('*Step 4/4 — Sort order?*\nReply with a number, or send "skip" to use default (0). Or /cancel.', { parse_mode: 'Markdown' });
+                return;
 
-            await ctx.reply(successMsg, {
-                parse_mode: 'Markdown',
-                reply_to_message_id: ctx.message.message_id
-            });
+            case 'awaiting_order': {
+                let order = 0;
+                if (input.toLowerCase() !== 'skip') {
+                    const parsed = Number(input);
+                    if (isNaN(parsed)) {
+                        await ctx.reply('❌ Please send a valid number, or "skip".');
+                        return;
+                    }
+                    order = parsed;
+                }
 
-            await logAdminAction(ctx.from, 'shop_apk_created', `Created APK product: ${metadata.title}`);
-            adminVideoSessions.delete(ctx.from.id);
-            console.log(`[APK Product Created] ${metadata.title}`);
-            return;
+                const course = await ShopProduct.findById(session.data.courseId).catch(() => null);
+                if (!course) {
+                    adminVideoSessions.delete(ctx.from.id);
+                    await ctx.reply('❌ Course no longer exists. Upload cancelled — please start again.');
+                    return;
+                }
+
+                const lesson = await CourseLesson.create({
+                    courseId: session.data.courseId,
+                    moduleName: session.data.moduleName,
+                    lessonName: session.data.lessonName,
+                    telegram_file_id: session.fileId,
+                    duration: session.duration,
+                    order: order
+                });
+
+                await ctx.reply(
+                    `✅ *LESSON CREATED*\n\n📚 Course: ${course.title}\n📖 Module: ${session.data.moduleName}\n📝 Lesson: ${session.data.lessonName}\n⏱️ Duration: ${session.duration}\n🔗 Lesson ID: \`${lesson._id}\`\n\nVideo is now ready to stream!`,
+                    { parse_mode: 'Markdown' }
+                );
+
+                await logAdminAction(ctx.from, 'lesson_created', `Created lesson: ${session.data.lessonName} in course ${course.title}`);
+                adminVideoSessions.delete(ctx.from.id);
+                console.log(`[Lesson Created] ${session.data.lessonName} in ${course.title}`);
+                return;
+            }
+
+            default:
+                adminVideoSessions.delete(ctx.from.id);
+                return;
         }
-
-        // ===== VIDEO LESSON FLOW (default) =====
-        if (!metadata.courseId || !metadata.moduleName || !metadata.lessonName) {
-            await ctx.reply('❌ Missing required fields: courseId, moduleName, lessonName', {
-                reply_to_message_id: ctx.message.message_id
-            });
-            return;
-        }
-
-        const course = await ShopProduct.findById(metadata.courseId).catch(() => null);
-        if (!course) {
-            await ctx.reply(`❌ Course not found: ${metadata.courseId}`, {
-                reply_to_message_id: ctx.message.message_id
-            });
-            return;
-        }
-
-        const lesson = await CourseLesson.create({
-            courseId: metadata.courseId,
-            moduleName: metadata.moduleName,
-            lessonName: metadata.lessonName,
-            telegram_file_id: session.fileId,
-            duration: session.duration,
-            order: metadata.order || 0
-        });
-
-        const successMsg = `
-✅ *LESSON CREATED*
- 
-📚 Course: ${course.title}
-📖 Module: ${metadata.moduleName}
-📝 Lesson: ${metadata.lessonName}
-⏱️ Duration: ${session.duration}
-🔗 Lesson ID: \`${lesson._id}\`
- 
-Video is now ready to stream!
-        `;
-
-        await ctx.reply(successMsg, {
-            parse_mode: 'Markdown',
-            reply_to_message_id: ctx.message.message_id
-        });
-
-        await logAdminAction(ctx.from, 'lesson_created', `Created lesson: ${metadata.lessonName} in course ${course.title}`);
-        adminVideoSessions.delete(ctx.from.id);
-        console.log(`[Lesson Created] ${metadata.lessonName} in ${course.title}`);
 
     } catch (err) {
         console.error('[Text handler error]:', err);
-        ctx.reply('❌ Error creating lesson: ' + err.message);
+        ctx.reply('❌ Error: ' + err.message);
+        adminVideoSessions.delete(ctx.from.id);
     }
 });
 bot.on('document', async (ctx) => {
@@ -1213,7 +1305,7 @@ bot.on('document', async (ctx) => {
         if (!admins.includes(ctx.from.id)) {
             return ctx.reply('❌ Only admins can upload files.');
         }
- 
+
         const doc = ctx.message.document;
         const fileId = doc.file_id;
         const fileName = doc.file_name || 'file';
@@ -1226,32 +1318,13 @@ bot.on('document', async (ctx) => {
                 fileId: fileId,
                 fileName: fileName,
                 duration: '0:00',
-                timestamp: new Date()
-            });
-
-            const videoResponseMsg = `
-🎬 *VIDEO CAPTURED (as document)*
- 
-📹 File ID: \`${fileId}\`
-📝 Filename: \`${fileName}\`
- 
-*Next Steps:* Reply with JSON:
-\`\`\`json
-{
-  "courseId": "course-001",
-  "moduleName": "Module 1: Getting Started",
-  "lessonName": "Chapter 1: Setup",
-  "order": 1
-}
-\`\`\`
-            `;
-
-            await ctx.reply(videoResponseMsg, {
-                parse_mode: 'Markdown',
-                reply_to_message_id: ctx.message.message_id
+                timestamp: new Date(),
+                step: 'awaiting_course',
+                data: {}
             });
 
             console.log(`[Video Upload as Document] Admin ${ctx.from.username || ctx.from.id} uploaded: ${fileName}`);
+            await askForCourse(ctx);
             return;
         }
 
@@ -1261,121 +1334,30 @@ bot.on('document', async (ctx) => {
             });
             return;
         }
- 
+
         adminVideoSessions.set(ctx.from.id, {
             fileId: fileId,
             fileName: fileName,
             fileSize: fileSize,
             type: 'apk',
+            step: 'awaiting_title',
+            data: {},
             timestamp: new Date()
         });
- 
-        const responseMsg = `
-📱 *APK CAPTURED*
- 
-📦 File: \`${fileName}\`
-💾 Size: ${fileSize}
-🔗 File ID: \`${fileId}\`
- 
-*Next:* Reply with JSON:
-\`\`\`json
-{
-  "title": "My App v1.0",
-  "description": "Amazing productivity app",
-  "price": 50,
-  "category": "Utility"
-}
-\`\`\`
-        `;
- 
-        await ctx.reply(responseMsg, {
-            parse_mode: 'Markdown',
-            reply_to_message_id: ctx.message.message_id
-        });
- 
+
+        await ctx.reply(
+            `📱 *APK CAPTURED*\n\n📦 File: \`${fileName}\`\n💾 Size: ${fileSize}\n\n*Step 1/4 — App title?*\nReply with the title, or /cancel.`,
+            { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id }
+        );
+
         console.log(`[APK Upload] Admin ${ctx.from.username} uploaded: ${fileName}`);
- 
+
     } catch (err) {
         console.error('[Document handler error]:', err);
         ctx.reply('❌ Error processing file.');
     }
 });
-bot.command('shop', async (ctx) => {
-    try {
-        const userId = ctx.from.id;
-        const user = await User.findOne({ user_id: userId });
- 
-        if (!user) {
-            return ctx.reply('❌ User not found');
-        }
- 
-        const purchaseCount = await UserPurchase.countDocuments({
-            userId,
-            status: 'active'
-        });
- 
-        const totalProducts = await ShopProduct.countDocuments({ active: true });
- 
-        const message = `
-🛍️ *DASH EARN SHOP*
- 
-💰 Your Balance: *${user.balance} DASH*
-📚 Your Purchases: *${purchaseCount}*
-📦 Available Products: *${totalProducts}*
- 
-✨ *Shop Features:*
-📚 Professional Courses
-💻 Ready-to-use APKs
-🔒 Secure Video Streaming
-⭐ Lifetime Access
- 
-📲 Open the Shop tab in the app to browse!
-        `;
- 
-        await ctx.reply(message, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🛍️ Open Shop', url: process.env.MINI_APP_URL || 'https://mini-app-ui-embta.vercel.app' }],
-                    [{ text: '📚 View Courses', callback_data: 'shop_courses' }],
-                    [{ text: '💰 Check Balance', callback_data: 'check_balance' }]
-                ]
-            }
-        });
-    } catch (err) {
-        console.error('[Shop command error]:', err);
-        ctx.reply('❌ Error loading shop info');
-    }
-});
-bot.command('uploadcourse', async (ctx) => {
-    if (!admins.includes(ctx.from.id)) {
-        return ctx.reply('❌ Admin only');
-    }
- 
-    const helpMsg = `
-📹 *COURSE VIDEO UPLOAD GUIDE*
- 
-1️⃣ Send a video file (or forward from channel)
-2️⃣ Bot will reply with file_id
-3️⃣ Send course metadata as JSON:
- 
-\`\`\`json
-{
-  "courseId": "ObjectId or string ID",
-  "moduleName": "Module 1: Basics",
-  "lessonName": "Getting Started",
-  "order": 1
-}
-\`\`\`
- 
-Or create directly via web admin panel:
-Shop Manager → Courses → Add Lesson
- 
-Questions? Contact @support
-    `;
- 
-    ctx.reply(helpMsg, { parse_mode: 'Markdown' });
-});
+
 
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
