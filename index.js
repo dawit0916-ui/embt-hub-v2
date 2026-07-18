@@ -3775,14 +3775,45 @@ app.get('/api/download-apk', validateInitData, async (req, res) => {
             return res.status(404).json({ error: 'APK not available' });
         }
 
-        const fileInfo = await bot.telegram.getFile(product.telegram_file_id);
-        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${fileInfo.file_path}`;
+        let filePath;
+        try {
+            const fileInfo = await bot.telegram.getFile(product.telegram_file_id);
+            filePath = fileInfo.file_path;
+        } catch (err) {
+            console.error('[APK getFile Error]:', err);
+            return res.status(500).json({ error: 'Unable to retrieve APK' });
+        }
 
-        res.redirect(telegramDownloadUrl);
+        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
+
+        const axios = require('axios');
+        try {
+            const response = await axios.get(telegramDownloadUrl, {
+                responseType: 'stream',
+                timeout: 30000
+            });
+
+            res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+            res.setHeader('Content-Disposition', `attachment; filename="${product.fileName || 'app.apk'}"`);
+            if (response.headers['content-length']) {
+                res.setHeader('Content-Length', response.headers['content-length']);
+            }
+
+            response.data.pipe(res);
+
+            response.data.on('error', (err) => {
+                console.error('[APK Stream Error]:', err.message);
+                if (!res.headersSent) res.status(500).json({ error: 'Stream interrupted' });
+            });
+
+        } catch (err) {
+            console.error('[APK Download Error]:', err.message);
+            if (!res.headersSent) return res.status(500).json({ error: 'Failed to download APK' });
+        }
 
     } catch (err) {
-        console.error('[APK Download Error]:', err);
-        res.status(500).json({ error: 'Download failed' });
+        console.error('[APK Route Error]:', err);
+        if (!res.headersSent) return res.status(500).json({ error: 'Server error' });
     }
 });
 // =====================================================
