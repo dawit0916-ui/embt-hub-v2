@@ -284,6 +284,11 @@ const CompletedTask = mongoose.model('CompletedTask', new mongoose.Schema({
     taskKey: { type: String, required: true },   // 'YYYY-MM-DD' or 'message_id'
     createdAt: { type: Date, default: Date.now }
 }).index({ userId: 1, taskType: 1, taskKey: 1 }, { unique: true })); // Prevents double-claiming
+// =====================================================
+// SHOP SYSTEM - MODELS
+// =====================================================
+
+// ShopProduct: Courses, APKs, etc.
 const ShopProduct = mongoose.model('ShopProduct', new mongoose.Schema({
     type: { type: String, enum: ['course', 'apk', 'other'], required: true },
     title: { type: String, required: true },
@@ -310,7 +315,8 @@ const CourseLesson = mongoose.model('CourseLesson', new mongoose.Schema({
     order: { type: Number, default: 0 },           // Sort order within course
     telegramMessageId: { type: Number, default: null }, // Where it was posted in storage channel
     createdAt: { type: Date, default: Date.now }
-})); 
+}));
+
 // UserPurchase: Track what users have bought
 const UserPurchase = mongoose.model('UserPurchase', new mongoose.Schema({
     userId: { type: Number, required: true, index: true },
@@ -321,6 +327,7 @@ const UserPurchase = mongoose.model('UserPurchase', new mongoose.Schema({
     accessExpiresAt: { type: Date, default: null }, // null = lifetime
     status: { type: String, enum: ['active', 'expired', 'cancelled'], default: 'active' }
 }));
+
 
 
 async function logAdminAction(adminUser, action, description) {
@@ -990,6 +997,306 @@ bot.action('start_bot_reminder', async (ctx) => {
         console.error('[Reminder Button Error]:', err.message);
     }
 });
+// =====================================================
+// ENHANCED BOT VIDEO HANDLER - AUTO FILE_ID CAPTURE
+// Add to your bot handlers in index.js
+// =====================================================
+ 
+// Track admin sessions for multi-step video upload workflow
+const adminVideoSessions = new Map();
+ 
+// Step 1: Admin sends video to bot
+bot.on('video', async (ctx) => {
+    try {
+        // Security: only admins can upload course videos
+        if (!admins.includes(ctx.from.id)) {
+            return ctx.reply('❌ Only admins can upload course videos.');
+        }
+ 
+        const video = ctx.message.video;
+        const fileId = video.file_id;
+        const fileName = video.file_name || 'video.mp4';
+        const duration = video.duration || 0;
+ 
+        // Format duration for display
+        const durationStr = Math.floor(duration / 60) + ':' + String(duration % 60).padStart(2, '0');
+ 
+        // Store session temporarily
+        adminVideoSessions.set(ctx.from.id, {
+            fileId: fileId,
+            fileName: fileName,
+            duration: durationStr,
+            timestamp: new Date()
+        });
+ 
+        // Step 1 response: Show file_id and ask for course/lesson info
+        const responseMsg = `
+🎬 *VIDEO CAPTURED*
+ 
+📹 File ID: \`${fileId}\`
+📝 Filename: \`${fileName}\`
+⏱️ Duration: ${durationStr}
+ 
+*Next Steps:* Reply with JSON:
+\`\`\`json
+{
+  "courseId": "course-001",
+  "moduleName": "Module 1: Getting Started",
+  "lessonName": "Chapter 1: Setup",
+  "order": 1
+}
+\`\`\`
+ 
+Or use the web admin panel at your Mini App.
+        `;
+ 
+        const sessionMsg = await ctx.reply(responseMsg, {
+            parse_mode: 'Markdown',
+            reply_to_message_id: ctx.message.message_id
+        });
+ 
+        // Store message_id for reference
+        adminVideoSessions.get(ctx.from.id).messageId = sessionMsg.message_id;
+ 
+        console.log(`[Video Upload] Admin ${ctx.from.username || ctx.from.id} uploaded: ${fileName}`);
+ 
+        // Optional: Forward to storage channel
+        if (STORAGE_CHANNEL_ID) {
+            try {
+                await ctx.forwardMessage(STORAGE_CHANNEL_ID);
+                await bot.telegram.sendMessage(
+                    STORAGE_CHANNEL_ID,
+                    `🎬 *COURSE VIDEO UPLOAD*\n👤 Admin: @${ctx.from.username || ctx.from.first_name}\n📝 File ID: \`${fileId}\`\n⏱️ Duration: ${durationStr}`,
+                    { parse_mode: 'Markdown', reply_to_message_id: ctx.message.message_id }
+                );
+            } catch (e) {
+                console.log('[Storage channel skip]:', e.message);
+            }
+        }
+ 
+    } catch (err) {
+        console.error('[Video handler error]:', err);
+        ctx.reply('❌ Error processing video. Check server logs.');
+    }
+});
+ 
+// Step 2: Admin sends metadata as JSON
+bot.on('text', async (ctx) => {
+    try {
+        // Only process if admin has an active video session
+        if (!adminVideoSessions.has(ctx.from.id)) {
+            return; // No active session, ignore
+        }
+ 
+        const session = adminVideoSessions.get(ctx.from.id);
+        const text = ctx.message.text.trim();
+ 
+        // Try to parse JSON
+        let metadata;
+        try {
+            metadata = JSON.parse(text);
+        } catch (e) {
+            // Not JSON, show help
+            await ctx.reply(`❌ Invalid format. Please send valid JSON:\n\`\`\`json\n{"courseId": "...", "moduleName": "...", "lessonName": "...", "order": 1}\n\`\`\``, {
+                parse_mode: 'Markdown',
+                reply_to_message_id: ctx.message.message_id
+            });
+            return;
+        }
+ 
+        // Validate required fields
+        if (!metadata.courseId || !metadata.moduleName || !metadata.lessonName) {
+            await ctx.reply('❌ Missing required fields: courseId, moduleName, lessonName', {
+                reply_to_message_id: ctx.message.message_id
+            });
+            return;
+        }
+ 
+        // Check if course exists
+        const course = await ShopProduct.findById(metadata.courseId).catch(() => null);
+        if (!course) {
+            await ctx.reply(`❌ Course not found: ${metadata.courseId}`, {
+                reply_to_message_id: ctx.message.message_id
+            });
+            return;
+        }
+ 
+        // Create lesson in database
+        const lesson = await CourseLesson.create({
+            courseId: metadata.courseId,
+            moduleName: metadata.moduleName,
+            lessonName: metadata.lessonName,
+            telegram_file_id: session.fileId,
+            duration: session.duration,
+            order: metadata.order || 0
+        });
+ 
+        // Success response
+        const successMsg = `
+✅ *LESSON CREATED*
+ 
+📚 Course: ${course.title}
+📖 Module: ${metadata.moduleName}
+📝 Lesson: ${metadata.lessonName}
+⏱️ Duration: ${session.duration}
+🔗 Lesson ID: \`${lesson._id}\`
+ 
+Video is now ready to stream!
+        `;
+ 
+        await ctx.reply(successMsg, {
+            parse_mode: 'Markdown',
+            reply_to_message_id: ctx.message.message_id
+        });
+ 
+        // Log action
+        await logAdminAction(ctx.from, 'lesson_created', `Created lesson: ${metadata.lessonName} in course ${course.title}`);
+ 
+        // Clear session
+        adminVideoSessions.delete(ctx.from.id);
+ 
+        console.log(`[Lesson Created] ${metadata.lessonName} in ${course.title}`);
+ 
+    } catch (err) {
+        console.error('[Text handler error]:', err);
+        ctx.reply('❌ Error creating lesson: ' + err.message);
+    }
+});
+bot.on('document', async (ctx) => {
+    try {
+        // Security check
+        if (!admins.includes(ctx.from.id)) {
+            return ctx.reply('❌ Only admins can upload APKs.');
+        }
+ 
+        const doc = ctx.message.document;
+        const fileId = doc.file_id;
+        const fileName = doc.file_name || 'file';
+        const fileSize = doc.file_size ? (doc.file_size / 1024 / 1024).toFixed(2) + ' MB' : 'unknown';
+ 
+        // Validate APK
+        if (!fileName.toLowerCase().endsWith('.apk')) {
+            await ctx.reply('❌ Only .apk files are supported.', {
+                reply_to_message_id: ctx.message.message_id
+            });
+            return;
+        }
+ 
+        // Store session
+        adminVideoSessions.set(ctx.from.id, {
+            fileId: fileId,
+            fileName: fileName,
+            fileSize: fileSize,
+            type: 'apk',
+            timestamp: new Date()
+        });
+ 
+        const responseMsg = `
+📱 *APK CAPTURED*
+ 
+📦 File: \`${fileName}\`
+💾 Size: ${fileSize}
+🔗 File ID: \`${fileId}\`
+ 
+*Next:* Reply with JSON:
+\`\`\`json
+{
+  "title": "My App v1.0",
+  "description": "Amazing productivity app",
+  "price": 50,
+  "category": "Utility"
+}
+\`\`\`
+        `;
+ 
+        await ctx.reply(responseMsg, {
+            parse_mode: 'Markdown',
+            reply_to_message_id: ctx.message.message_id
+        });
+ 
+        console.log(`[APK Upload] Admin ${ctx.from.username} uploaded: ${fileName}`);
+ 
+    } catch (err) {
+        console.error('[APK handler error]:', err);
+        ctx.reply('❌ Error processing APK.');
+    }
+});
+bot.command('shop', async (ctx) => {
+    try {
+        const userId = ctx.from.id;
+        const user = await User.findOne({ user_id: userId });
+ 
+        if (!user) {
+            return ctx.reply('❌ User not found');
+        }
+ 
+        const purchaseCount = await UserPurchase.countDocuments({
+            userId,
+            status: 'active'
+        });
+ 
+        const totalProducts = await ShopProduct.countDocuments({ active: true });
+ 
+        const message = `
+🛍️ *DASH EARN SHOP*
+ 
+💰 Your Balance: *${user.balance} DASH*
+📚 Your Purchases: *${purchaseCount}*
+📦 Available Products: *${totalProducts}*
+ 
+✨ *Shop Features:*
+📚 Professional Courses
+💻 Ready-to-use APKs
+🔒 Secure Video Streaming
+⭐ Lifetime Access
+ 
+📲 Open the Shop tab in the app to browse!
+        `;
+ 
+        await ctx.reply(message, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🛍️ Open Shop', url: process.env.MINI_APP_URL || 'https://mini-app-ui-embta.vercel.app' }],
+                    [{ text: '📚 View Courses', callback_data: 'shop_courses' }],
+                    [{ text: '💰 Check Balance', callback_data: 'check_balance' }]
+                ]
+            }
+        });
+    } catch (err) {
+        console.error('[Shop command error]:', err);
+        ctx.reply('❌ Error loading shop info');
+    }
+});
+bot.command('uploadcourse', async (ctx) => {
+    if (!admins.includes(ctx.from.id)) {
+        return ctx.reply('❌ Admin only');
+    }
+ 
+    const helpMsg = `
+📹 *COURSE VIDEO UPLOAD GUIDE*
+ 
+1️⃣ Send a video file (or forward from channel)
+2️⃣ Bot will reply with file_id
+3️⃣ Send course metadata as JSON:
+ 
+\`\`\`json
+{
+  "courseId": "ObjectId or string ID",
+  "moduleName": "Module 1: Basics",
+  "lessonName": "Getting Started",
+  "order": 1
+}
+\`\`\`
+ 
+Or create directly via web admin panel:
+Shop Manager → Courses → Add Lesson
+ 
+Questions? Contact @support
+    `;
+ 
+    ctx.reply(helpMsg, { parse_mode: 'Markdown' });
+});
 
 // --- EXPRESS APPLICATION WEB ROUTING ROUTE LAYOUT ---
 
@@ -1103,419 +1410,10 @@ app.post('/api/admin/user/whitelist', validateAdmin, async (req, res) => {
         res.status(500).json({ error: "Failed to update whitelist status." });
     }
 }); 
-// =====================================================
-// SECURE VIDEO STREAMING ROUTE
-// =====================================================
- 
-app.get('/api/stream-video', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const { courseId, lessonId } = req.query;
- 
-        if (!courseId || !lessonId) {
-            return res.status(400).json({ error: 'courseId and lessonId required' });
-        }
- 
-        // 1. Verify user owns/purchased the course
-        const purchase = await UserPurchase.findOne({
-            userId,
-            productId: courseId,
-            status: 'active'
-        });
- 
-        if (!purchase) {
-            return res.status(403).json({ error: 'You do not have access to this course' });
-        }
- 
-        // 2. Get lesson details
-        const lesson = await CourseLesson.findById(lessonId);
-        if (!lesson || lesson.courseId.toString() !== courseId) {
-            return res.status(404).json({ error: 'Lesson not found' });
-        }
- 
-        if (!lesson.telegram_file_id) {
-            return res.status(404).json({ error: 'Video not available' });
-        }
- 
-        // 3. Get file path from Telegram
-        let filePath;
-        try {
-            const fileInfo = await bot.telegram.getFile(lesson.telegram_file_id);
-            filePath = fileInfo.file_path;
-        } catch (err) {
-            console.error('[Telegram getFile Error]:', err);
-            return res.status(500).json({ error: 'Unable to retrieve video' });
-        }
- 
-        // 4. Build Telegram download URL
-        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
- 
-        // 5. Stream video from Telegram through our server
-        const axios = require('axios');
-        try {
-            const response = await axios.get(telegramDownloadUrl, {
-                responseType: 'stream',
-                timeout: 30000,
-                maxRedirects: 5
-            });
- 
-            // Set proper headers
-            res.setHeader('Content-Type', 'video/mp4');
-            res.setHeader('Accept-Ranges', 'bytes');
-            res.setHeader('Cache-Control', 'public, max-age=3600');
- 
-            // Pipe stream directly to response
-            response.data.pipe(res);
- 
-            response.data.on('error', (err) => {
-                console.error('[Stream Error]:', err);
-                if (!res.headersSent) {
-                    res.status(500).json({ error: 'Stream interrupted' });
-                }
-            });
- 
-        } catch (err) {
-            console.error('[Stream Download Error]:', err);
-            return res.status(500).json({ error: 'Failed to stream video' });
-        }
- 
-    } catch (err) {
-        console.error('[Video Stream Route Error]:', err);
-        return res.status(500).json({ error: 'Server error' });
-    }
-});
-app.get('/api/shop/products', async (req, res) => {
-    try {
-        const { type, category } = req.query;
-        let query = { active: true };
- 
-        if (type) query.type = type;
-        if (category) query.category = category;
- 
-        const products = await ShopProduct.find(query)
-            .select('_id title category description price thumbnail rating reviews type')
-            .sort({ createdAt: -1 });
- 
-        res.json({ success: true, products });
-    } catch (err) {
-        console.error('Get products error:', err);
-        res.status(500).json({ error: 'Failed to fetch products' });
-    }
-});
- 
-// Get single product details with lessons
-app.get('/api/shop/product/:productId', async (req, res) => {
-    try {
-        const { productId } = req.params;
- 
-        const product = await ShopProduct.findById(productId);
-        if (!product) {
-            return res.status(404).json({ error: 'Product not found' });
-        }
- 
-        let lessons = [];
-        if (product.type === 'course') {
-            lessons = await CourseLesson.find({ courseId: productId })
-                .select('_id moduleName lessonName duration order')
-                .sort({ order: 1 });
-        }
- 
-        res.json({ success: true, product, lessons });
-    } catch (err) {
-        console.error('Get product details error:', err);
-        res.status(500).json({ error: 'Failed to fetch product' });
-    }
-});
-// Get user's purchases
-app.get('/api/secure/my-shop-purchases', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
- 
-        const purchases = await UserPurchase.find({
-            userId,
-            status: 'active'
-        }).populate('productId', '_id title category type thumbnail price');
- 
-        res.json({ success: true, purchases });
-    } catch (err) {
-        console.error('Get purchases error:', err);
-        res.status(500).json({ error: 'Failed to fetch purchases' });
-    }
-});
- 
-// Purchase a course/product
-app.post('/api/secure/purchase-course', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const { productId } = req.body;
- 
-        if (!productId) {
-            return res.status(400).json({ error: 'productId required' });
-        }
- 
-        // 1. Get product
-        const product = await ShopProduct.findById(productId);
-        if (!product || !product.active) {
-            return res.status(404).json({ error: 'Product not found' });
-        }
- 
-        // 2. Get user
-        const user = await User.findOne({ user_id: userId });
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        if (user.is_banned) {
-            return res.status(403).json({ error: 'Account banned' });
-        }
- 
-        // 3. Check if already purchased
-        const alreadyPurchased = await UserPurchase.findOne({
-            userId,
-            productId,
-            status: 'active'
-        });
-        if (alreadyPurchased) {
-            return res.status(400).json({ error: 'You already own this product' });
-        }
- 
-        // 4. Check balance
-        if (user.balance < product.price) {
-            return res.status(400).json({ 
-                error: `Insufficient DASH. You need ${product.price} but have ${user.balance}` 
-            });
-        }
- 
-        // 5. Deduct price + create purchase record
-        const updatedUser = await User.findOneAndUpdate(
-            { user_id: userId },
-            {
-                $inc: { balance: -product.price },
-                $push: {
-                    history: {
-                        title: `Course Purchase: ${product.title}`,
-                        reward: -product.price,
-                        taskId: `shop_${productId}`,
-                        date: new Date()
-                    }
-                }
-            },
-            { new: true }
-        );
- 
-        await UserPurchase.create({
-            userId,
-            productId,
-            type: product.type,
-            price: product.price
-        });
- 
-        // 6. Log activity
-        await logAdminAction({ id: userId, first_name: user.first_name }, 'purchase_course', `Purchased ${product.title} for ${product.price} DASH`);
- 
-        res.json({
-            success: true,
-            message: `Successfully purchased ${product.title}!`,
-            newBalance: updatedUser.balance
-        });
- 
-    } catch (err) {
-        console.error('Purchase error:', err);
-        res.status(500).json({ error: 'Purchase failed' });
-    }
-});
-app.post('/api/admin/shop/create-course', validateAdmin, async (req, res) => {
-    try {
-        const { title, category, description, price, thumbnail } = req.body;
- 
-        if (!title || !price) {
-            return res.status(400).json({ error: 'title and price required' });
-        }
- 
-        const product = await ShopProduct.create({
-            type: 'course',
-            title,
-            category: category || 'General',
-            description: description || '',
-            price: Number(price),
-            thumbnail: thumbnail || '',
-            createdBy: req.adminUser.id
-        });
- 
-        await logAdminAction(req.adminUser, 'shop_create_course', `Created course: ${title}`);
- 
-        res.json({
-            success: true,
-            message: 'Course created successfully',
-            courseId: product._id
-        });
- 
-    } catch (err) {
-        console.error('Create course error:', err);
-        res.status(500).json({ error: 'Failed to create course' });
-    }
-});
- 
-// Add lesson to course (with Telegram file_id)
-app.post('/api/admin/shop/lesson/add', validateAdmin, async (req, res) => {
-    try {
-        const { courseId, moduleName, lessonName, telegram_file_id, duration, order } = req.body;
- 
-        if (!courseId || !moduleName || !lessonName || !telegram_file_id) {
-            return res.status(400).json({ error: 'Missing required fields' });
-        }
- 
-        // Verify course exists
-        const course = await ShopProduct.findById(courseId);
-        if (!course || course.type !== 'course') {
-            return res.status(404).json({ error: 'Course not found' });
-        }
- 
-        const lesson = await CourseLesson.create({
-            courseId,
-            moduleName,
-            lessonName,
-            telegram_file_id,
-            duration: duration || '0:00',
-            order: order || 0
-        });
- 
-        await logAdminAction(req.adminUser, 'shop_add_lesson', `Added lesson to course ${course.title}`);
- 
-        res.json({
-            success: true,
-            message: 'Lesson added successfully',
-            lessonId: lesson._id
-        });
- 
-    } catch (err) {
-        console.error('Add lesson error:', err);
-        res.status(500).json({ error: 'Failed to add lesson' });
-    }
-});
- 
-// Get all shop products (admin view)
-app.get('/api/admin/shop/products', validateAdmin, async (req, res) => {
-    try {
-        const products = await ShopProduct.find()
-            .select('_id type title category price active createdAt createdBy')
-            .sort({ createdAt: -1 });
- 
-        res.json({ success: true, products });
-    } catch (err) {
-        console.error('Get admin products error:', err);
-        res.status(500).json({ error: 'Failed to fetch products' });
-    }
-});
- 
-// Get course with all lessons (admin view)
-app.get('/api/admin/shop/course/:courseId', validateAdmin, async (req, res) => {
-    try {
-        const { courseId } = req.params;
- 
-        const course = await ShopProduct.findById(courseId);
-        if (!course) {
-            return res.status(404).json({ error: 'Course not found' });
-        }
- 
-        const lessons = await CourseLesson.find({ courseId })
-            .sort({ order: 1 });
- 
-        res.json({ success: true, course, lessons });
-    } catch (err) {
-        console.error('Get course error:', err);
-        res.status(500).json({ error: 'Failed to fetch course' });
-    }
-});
-// Update product
-app.put('/api/admin/shop/product/:productId', validateAdmin, async (req, res) => {
-    try {
-        const { productId } = req.params;
-        const updates = req.body;
- 
-        const product = await ShopProduct.findByIdAndUpdate(
-            productId,
-            { ...updates, updatedAt: new Date() },
-            { new: true }
-        );
- 
-        if (!product) {
-            return res.status(404).json({ error: 'Product not found' });
-        }
- 
-        await logAdminAction(req.adminUser, 'shop_update_product', `Updated product: ${product.title}`);
- 
-        res.json({ success: true, product });
-    } catch (err) {
-        console.error('Update product error:', err);
-        res.status(500).json({ error: 'Failed to update product' });
-    }
-});
- 
-// Delete lesson
-app.delete('/api/admin/shop/lesson/:lessonId', validateAdmin, async (req, res) => {
-    try {
-        const { lessonId } = req.params;
- 
-        const lesson = await CourseLesson.findByIdAndDelete(lessonId);
-        if (!lesson) {
-            return res.status(404).json({ error: 'Lesson not found' });
-        }
- 
-        await logAdminAction(req.adminUser, 'shop_delete_lesson', `Deleted lesson: ${lesson.lessonName}`);
- 
-        res.json({ success: true, message: 'Lesson deleted' });
-    } catch (err) {
-        console.error('Delete lesson error:', err);
-        res.status(500).json({ error: 'Failed to delete lesson' });
-    }
-});
-// Delete product (cascade delete lessons)
-app.delete('/api/admin/shop/product/:productId', validateAdmin, async (req, res) => {
-    try {
-        const { productId } = req.params;
- 
-        const product = await ShopProduct.findByIdAndDelete(productId);
-        if (!product) {
-            return res.status(404).json({ error: 'Product not found' });
-        }
- 
-        // Delete all associated lessons
-        await CourseLesson.deleteMany({ courseId: productId });
- 
-        await logAdminAction(req.adminUser, 'shop_delete_product', `Deleted product: ${product.title}`);
- 
-        res.json({ success: true, message: 'Product deleted' });
-    } catch (err) {
-        console.error('Delete product error:', err);
-        res.status(500).json({ error: 'Failed to delete product' });
-    }
-});
- 
-// Get shop statistics
-app.get('/api/admin/shop/stats', validateAdmin, async (req, res) => {
-    try {
-        const totalProducts = await ShopProduct.countDocuments();
-        const totalCourses = await ShopProduct.countDocuments({ type: 'course' });
-        const totalPurchases = await UserPurchase.countDocuments({ status: 'active' });
-        const totalRevenue = await UserPurchase.aggregate([
-            { $match: { status: 'active' } },
-            { $group: { _id: null, total: { $sum: '$price' } } }
-        ]);
- 
-        res.json({
-            success: true,
-            stats: {
-                totalProducts,
-                totalCourses,
-                totalPurchases,
-                totalRevenue: totalRevenue[0]?.total || 0
-            }
-        });
-    } catch (err) {
-        console.error('Get stats error:', err);
-        res.status(500).json({ error: 'Failed to fetch stats' });
-    }
-});
+
+
+
+
 // Upload reminder image to private channel and save file_id
 app.post('/api/admin/reminder-config', validateAdmin, async (req, res) => {
     try {
@@ -3564,6 +3462,434 @@ app.get('/api/secure/history', validateInitData, async (req, res) => {
     }
 });  
 
+// =====================================================
+// SECURE VIDEO STREAMING ROUTE
+// =====================================================
+
+app.get('/api/stream-video', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { courseId, lessonId } = req.query;
+
+        if (!courseId || !lessonId) {
+            return res.status(400).json({ error: 'courseId and lessonId required' });
+        }
+
+        // 1. Verify user owns/purchased the course
+        const purchase = await UserPurchase.findOne({
+            userId,
+            productId: courseId,
+            status: 'active'
+        });
+
+        if (!purchase) {
+            return res.status(403).json({ error: 'You do not have access to this course' });
+        }
+
+        // 2. Get lesson details
+        const lesson = await CourseLesson.findById(lessonId);
+        if (!lesson || lesson.courseId.toString() !== courseId) {
+            return res.status(404).json({ error: 'Lesson not found' });
+        }
+
+        if (!lesson.telegram_file_id) {
+            return res.status(404).json({ error: 'Video not available' });
+        }
+
+        // 3. Get file path from Telegram
+        let filePath;
+        try {
+            const fileInfo = await bot.telegram.getFile(lesson.telegram_file_id);
+            filePath = fileInfo.file_path;
+        } catch (err) {
+            console.error('[Telegram getFile Error]:', err);
+            return res.status(500).json({ error: 'Unable to retrieve video' });
+        }
+
+        // 4. Build Telegram download URL
+        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
+
+        // 5. Stream video from Telegram through our server
+        const axios = require('axios');
+        try {
+            const response = await axios.get(telegramDownloadUrl, {
+                responseType: 'stream',
+                timeout: 30000,
+                maxRedirects: 5
+            });
+
+            // Set proper headers
+            res.setHeader('Content-Type', 'video/mp4');
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Cache-Control', 'public, max-age=3600');
+
+            // Pipe stream directly to response
+            response.data.pipe(res);
+
+            response.data.on('error', (err) => {
+                console.error('[Stream Error]:', err);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Stream interrupted' });
+                }
+            });
+
+        } catch (err) {
+            console.error('[Stream Download Error]:', err);
+            return res.status(500).json({ error: 'Failed to stream video' });
+        }
+
+    } catch (err) {
+        console.error('[Video Stream Route Error]:', err);
+        return res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// =====================================================
+// USER PURCHASE ROUTES
+// =====================================================
+
+// Get all shop products
+app.get('/api/shop/products', async (req, res) => {
+    try {
+        const { type, category } = req.query;
+        let query = { active: true };
+
+        if (type) query.type = type;
+        if (category) query.category = category;
+
+        const products = await ShopProduct.find(query)
+            .select('_id title category description price thumbnail rating reviews type')
+            .sort({ createdAt: -1 });
+
+        res.json({ success: true, products });
+    } catch (err) {
+        console.error('Get products error:', err);
+        res.status(500).json({ error: 'Failed to fetch products' });
+    }
+});
+
+// Get single product details with lessons
+app.get('/api/shop/product/:productId', async (req, res) => {
+    try {
+        const { productId } = req.params;
+
+        const product = await ShopProduct.findById(productId);
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+
+        let lessons = [];
+        if (product.type === 'course') {
+            lessons = await CourseLesson.find({ courseId: productId })
+                .select('_id moduleName lessonName duration order')
+                .sort({ order: 1 });
+        }
+
+        res.json({ success: true, product, lessons });
+    } catch (err) {
+        console.error('Get product details error:', err);
+        res.status(500).json({ error: 'Failed to fetch product' });
+    }
+});
+
+// Get user's purchases
+app.get('/api/secure/my-shop-purchases', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+
+        const purchases = await UserPurchase.find({
+            userId,
+            status: 'active'
+        }).populate('productId', '_id title category type thumbnail price');
+
+        res.json({ success: true, purchases });
+    } catch (err) {
+        console.error('Get purchases error:', err);
+        res.status(500).json({ error: 'Failed to fetch purchases' });
+    }
+});
+
+// Purchase a course/product
+app.post('/api/secure/purchase-course', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { productId } = req.body;
+
+        if (!productId) {
+            return res.status(400).json({ error: 'productId required' });
+        }
+
+        // 1. Get product
+        const product = await ShopProduct.findById(productId);
+        if (!product || !product.active) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+
+        // 2. Get user
+        const user = await User.findOne({ user_id: userId });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        if (user.is_banned) {
+            return res.status(403).json({ error: 'Account banned' });
+        }
+
+        // 3. Check if already purchased
+        const alreadyPurchased = await UserPurchase.findOne({
+            userId,
+            productId,
+            status: 'active'
+        });
+        if (alreadyPurchased) {
+            return res.status(400).json({ error: 'You already own this product' });
+        }
+
+        // 4. Check balance
+        if (user.balance < product.price) {
+            return res.status(400).json({ 
+                error: `Insufficient DASH. You need ${product.price} but have ${user.balance}` 
+            });
+        }
+
+        // 5. Deduct price + create purchase record
+        const updatedUser = await User.findOneAndUpdate(
+            { user_id: userId },
+            {
+                $inc: { balance: -product.price },
+                $push: {
+                    history: {
+                        title: `Course Purchase: ${product.title}`,
+                        reward: -product.price,
+                        taskId: `shop_${productId}`,
+                        date: new Date()
+                    }
+                }
+            },
+            { new: true }
+        );
+
+        await UserPurchase.create({
+            userId,
+            productId,
+            type: product.type,
+            price: product.price
+        });
+
+        // 6. Log activity
+        await logAdminAction({ id: userId, first_name: user.first_name }, 'purchase_course', `Purchased ${product.title} for ${product.price} DASH`);
+
+        res.json({
+            success: true,
+            message: `Successfully purchased ${product.title}!`,
+            newBalance: updatedUser.balance
+        });
+
+    } catch (err) {
+        console.error('Purchase error:', err);
+        res.status(500).json({ error: 'Purchase failed' });
+    }
+});
+
+// =====================================================
+// ADMIN SHOP ROUTES
+// =====================================================
+
+// Create course
+app.post('/api/admin/shop/create-course', validateAdmin, async (req, res) => {
+    try {
+        const { title, category, description, price, thumbnail } = req.body;
+
+        if (!title || !price) {
+            return res.status(400).json({ error: 'title and price required' });
+        }
+
+        const product = await ShopProduct.create({
+            type: 'course',
+            title,
+            category: category || 'General',
+            description: description || '',
+            price: Number(price),
+            thumbnail: thumbnail || '',
+            createdBy: req.adminUser.id
+        });
+
+        await logAdminAction(req.adminUser, 'shop_create_course', `Created course: ${title}`);
+
+        res.json({
+            success: true,
+            message: 'Course created successfully',
+            courseId: product._id
+        });
+
+    } catch (err) {
+        console.error('Create course error:', err);
+        res.status(500).json({ error: 'Failed to create course' });
+    }
+});
+
+// Add lesson to course (with Telegram file_id)
+app.post('/api/admin/shop/lesson/add', validateAdmin, async (req, res) => {
+    try {
+        const { courseId, moduleName, lessonName, telegram_file_id, duration, order } = req.body;
+
+        if (!courseId || !moduleName || !lessonName || !telegram_file_id) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        // Verify course exists
+        const course = await ShopProduct.findById(courseId);
+        if (!course || course.type !== 'course') {
+            return res.status(404).json({ error: 'Course not found' });
+        }
+
+        const lesson = await CourseLesson.create({
+            courseId,
+            moduleName,
+            lessonName,
+            telegram_file_id,
+            duration: duration || '0:00',
+            order: order || 0
+        });
+
+        await logAdminAction(req.adminUser, 'shop_add_lesson', `Added lesson to course ${course.title}`);
+
+        res.json({
+            success: true,
+            message: 'Lesson added successfully',
+            lessonId: lesson._id
+        });
+
+    } catch (err) {
+        console.error('Add lesson error:', err);
+        res.status(500).json({ error: 'Failed to add lesson' });
+    }
+});
+
+// Get all shop products (admin view)
+app.get('/api/admin/shop/products', validateAdmin, async (req, res) => {
+    try {
+        const products = await ShopProduct.find()
+            .select('_id type title category price active createdAt createdBy')
+            .sort({ createdAt: -1 });
+
+        res.json({ success: true, products });
+    } catch (err) {
+        console.error('Get admin products error:', err);
+        res.status(500).json({ error: 'Failed to fetch products' });
+    }
+});
+
+// Get course with all lessons (admin view)
+app.get('/api/admin/shop/course/:courseId', validateAdmin, async (req, res) => {
+    try {
+        const { courseId } = req.params;
+
+        const course = await ShopProduct.findById(courseId);
+        if (!course) {
+            return res.status(404).json({ error: 'Course not found' });
+        }
+
+        const lessons = await CourseLesson.find({ courseId })
+            .sort({ order: 1 });
+
+        res.json({ success: true, course, lessons });
+    } catch (err) {
+        console.error('Get course error:', err);
+        res.status(500).json({ error: 'Failed to fetch course' });
+    }
+});
+
+// Update product
+app.put('/api/admin/shop/product/:productId', validateAdmin, async (req, res) => {
+    try {
+        const { productId } = req.params;
+        const updates = req.body;
+
+        const product = await ShopProduct.findByIdAndUpdate(
+            productId,
+            { ...updates, updatedAt: new Date() },
+            { new: true }
+        );
+
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+
+        await logAdminAction(req.adminUser, 'shop_update_product', `Updated product: ${product.title}`);
+
+        res.json({ success: true, product });
+    } catch (err) {
+        console.error('Update product error:', err);
+        res.status(500).json({ error: 'Failed to update product' });
+    }
+});
+
+// Delete lesson
+app.delete('/api/admin/shop/lesson/:lessonId', validateAdmin, async (req, res) => {
+    try {
+        const { lessonId } = req.params;
+
+        const lesson = await CourseLesson.findByIdAndDelete(lessonId);
+        if (!lesson) {
+            return res.status(404).json({ error: 'Lesson not found' });
+        }
+
+        await logAdminAction(req.adminUser, 'shop_delete_lesson', `Deleted lesson: ${lesson.lessonName}`);
+
+        res.json({ success: true, message: 'Lesson deleted' });
+    } catch (err) {
+        console.error('Delete lesson error:', err);
+        res.status(500).json({ error: 'Failed to delete lesson' });
+    }
+});
+
+// Delete product (cascade delete lessons)
+app.delete('/api/admin/shop/product/:productId', validateAdmin, async (req, res) => {
+    try {
+        const { productId } = req.params;
+
+        const product = await ShopProduct.findByIdAndDelete(productId);
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+
+        // Delete all associated lessons
+        await CourseLesson.deleteMany({ courseId: productId });
+
+        await logAdminAction(req.adminUser, 'shop_delete_product', `Deleted product: ${product.title}`);
+
+        res.json({ success: true, message: 'Product deleted' });
+    } catch (err) {
+        console.error('Delete product error:', err);
+        res.status(500).json({ error: 'Failed to delete product' });
+    }
+});
+
+// Get shop statistics
+app.get('/api/admin/shop/stats', validateAdmin, async (req, res) => {
+    try {
+        const totalProducts = await ShopProduct.countDocuments();
+        const totalCourses = await ShopProduct.countDocuments({ type: 'course' });
+        const totalPurchases = await UserPurchase.countDocuments({ status: 'active' });
+        const totalRevenue = await UserPurchase.aggregate([
+            { $match: { status: 'active' } },
+            { $group: { _id: null, total: { $sum: '$price' } } }
+        ]);
+
+        res.json({
+            success: true,
+            stats: {
+                totalProducts,
+                totalCourses,
+                totalPurchases,
+                totalRevenue: totalRevenue[0]?.total || 0
+            }
+        });
+    } catch (err) {
+        console.error('Get stats error:', err);
+        res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
 // 🔔 Reminder System Workers
 setInterval(async () => {
     try {
@@ -3649,7 +3975,17 @@ setInterval(async () => {
         await runGhostValidator(null); 
     } catch (err) { console.error("Worker lifecycle failure:", err); }
 }, 24 * 60 * 60 * 1000);
-
+setInterval(() => {
+    const now = Date.now();
+    const TIMEOUT = 60 * 60 * 1000; // 1 hour
+ 
+    for (const [userId, session] of adminVideoSessions) {
+        if (now - session.timestamp.getTime() > TIMEOUT) {
+            adminVideoSessions.delete(userId);
+            console.log(`[Session Cleanup] Cleared session for admin ${userId}`);
+        }
+    }
+}, 30 * 60 * 1000); // Run every 30 minutes
 
 bot.catch((err) => console.log(`⚠️ Telegraf Framework Core Event Loop Catch Error:`, err));
 process.on('unhandledRejection', (reason) => console.log('❌ Host Process Unhandled Rejection Fault:', reason));
