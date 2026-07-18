@@ -892,12 +892,12 @@ bot.start(async (ctx) => {
 });
 bot.on('message', async (ctx) => {
   try {
-    if (activeTask.type !== 'comment') return;       // not today's task — ignore
-    if (ctx.chat.id !== PUBLIC_GROUP_ID) return;
-    if (!ctx.message.text) return;
+    if (activeTask.type !== 'comment') return next();       // not today's task — ignore
+    if (ctx.chat.id !== PUBLIC_GROUP_ID) return next();
+    if (!ctx.message.text) return next();
 
     const text = ctx.message.text.trim().toUpperCase(); // case-insensitive
-    if (text !== activeTask.word) return;
+    if (text !== activeTask.word) return next();
 
     const userId = ctx.from.id;
     const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
@@ -927,6 +927,7 @@ bot.on('message', async (ctx) => {
 
   } catch (err) {
     console.error('Error in comment task handler:', err);
+ return next();
   }
 });
 
