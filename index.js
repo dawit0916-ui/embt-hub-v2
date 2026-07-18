@@ -292,16 +292,21 @@ const CompletedTask = mongoose.model('CompletedTask', new mongoose.Schema({
 const ShopProduct = mongoose.model('ShopProduct', new mongoose.Schema({
     type: { type: String, enum: ['course', 'apk', 'other'], required: true },
     title: { type: String, required: true },
-    category: { type: String, default: 'General' },  // e.g., "TikTok Automation"
+    category: { type: String, default: 'General' },
     description: { type: String, default: '' },
-    price: { type: Number, required: true },  // in DASH
-    thumbnail: { type: String, default: '' }, // image URL or Telegram file_id
+    price: { type: Number, required: true },
+    thumbnail: { type: String, default: '' },
     rating: { type: Number, default: 0 },
     reviews: { type: Number, default: 0 },
     active: { type: Boolean, default: true },
-    createdBy: { type: Number, default: null }, // admin user_id
+    createdBy: { type: Number, default: null },
     createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now }
+    updatedAt: { type: Date, default: Date.now },
+
+    // Added for APK products
+    telegram_file_id: { type: String, default: null }, // needed to deliver the APK on purchase
+    fileName: { type: String, default: null },
+    fileSize: { type: String, default: null }
 }));
 
 // CourseLesson: Individual lessons/modules within a course
@@ -892,18 +897,18 @@ bot.start(async (ctx) => {
 });
 bot.on('message', async (ctx, next) => {
   try {
-    if (activeTask.type !== 'comment') return next();       // not today's task — ignore
+    if (activeTask.type !== 'comment') return next();
     if (ctx.chat.id !== PUBLIC_GROUP_ID) return next();
     if (!ctx.message.text) return next();
 
-    const text = ctx.message.text.trim().toUpperCase(); // case-insensitive
+    const text = ctx.message.text.trim().toUpperCase();
     if (text !== activeTask.word) return next();
 
     const userId = ctx.from.id;
-    const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const todayKey = new Date().toISOString().slice(0, 10);
 
     const already = await CompletedTask.findOne({ userId, taskType: 'comment', taskKey: todayKey });
-    if (already) return; // silently ignore repeats, no spam DM needed
+    if (already) return; // duplicate — stop here, no need to pass through
 
     let user = await User.findOne({ user_id: userId });
     if (!user) {
@@ -911,7 +916,7 @@ bot.on('message', async (ctx, next) => {
     }
 
     const level = user.level || 1;
-    const reward = 50 * level; // 50–500
+    const reward = 50 * level;
 
     await CompletedTask.create({ userId, taskType: 'comment', taskKey: todayKey });
 
@@ -919,7 +924,6 @@ bot.on('message', async (ctx, next) => {
     user.total_earned = (user.total_earned || 0) + reward;
     await user.save();
 
-    // NOTE: message is NOT deleted, per your spec
     await bot.telegram.sendMessage(
       userId,
       `✅ Task verified!\n🎉 +${reward} DASH\n💰 Balance: ${user.balance} DASH`
@@ -927,7 +931,7 @@ bot.on('message', async (ctx, next) => {
 
   } catch (err) {
     console.error('Error in comment task handler:', err);
- return next();
+    return next();
   }
 });
 
@@ -1084,36 +1088,75 @@ Or use the web admin panel at your Mini App.
 // Step 2: Admin sends metadata as JSON
 bot.on('text', async (ctx) => {
     try {
-        // Only process if admin has an active video session
         if (!adminVideoSessions.has(ctx.from.id)) {
             return; // No active session, ignore
         }
- 
+
         const session = adminVideoSessions.get(ctx.from.id);
         const text = ctx.message.text.trim();
- 
-        // Try to parse JSON
+
         let metadata;
         try {
             metadata = JSON.parse(text);
         } catch (e) {
-            // Not JSON, show help
-            await ctx.reply(`❌ Invalid format. Please send valid JSON:\n\`\`\`json\n{"courseId": "...", "moduleName": "...", "lessonName": "...", "order": 1}\n\`\`\``, {
+            const helpJson = session.type === 'apk'
+                ? '{"title": "...", "description": "...", "price": 0, "category": "..."}'
+                : '{"courseId": "...", "moduleName": "...", "lessonName": "...", "order": 1}';
+            await ctx.reply(`❌ Invalid format. Please send valid JSON:\n\`\`\`json\n${helpJson}\n\`\`\``, {
                 parse_mode: 'Markdown',
                 reply_to_message_id: ctx.message.message_id
             });
             return;
         }
+
+        // ===== APK PRODUCT FLOW =====
+        if (session.type === 'apk') {
+            if (!metadata.title || !metadata.description || metadata.price == null || !metadata.category) {
+                await ctx.reply('❌ Missing required fields: title, description, price, category', {
+                    reply_to_message_id: ctx.message.message_id
+                });
+                return;
+            }
+
+            const product = await ShopProduct.create({
+                title: metadata.title,
+                description: metadata.description,
+                price: metadata.price,
+                category: metadata.category,
+                type: 'apk',
+                telegram_file_id: session.fileId,
+                fileName: session.fileName,
+                fileSize: session.fileSize
+            });
+
+            const successMsg = `
+✅ *APK PRODUCT CREATED*
  
-        // Validate required fields
+📦 Title: ${metadata.title}
+💰 Price: ${metadata.price}
+🏷 Category: ${metadata.category}
+🔗 Product ID: \`${product._id}\`
+            `;
+
+            await ctx.reply(successMsg, {
+                parse_mode: 'Markdown',
+                reply_to_message_id: ctx.message.message_id
+            });
+
+            await logAdminAction(ctx.from, 'shop_apk_created', `Created APK product: ${metadata.title}`);
+            adminVideoSessions.delete(ctx.from.id);
+            console.log(`[APK Product Created] ${metadata.title}`);
+            return;
+        }
+
+        // ===== VIDEO LESSON FLOW (default) =====
         if (!metadata.courseId || !metadata.moduleName || !metadata.lessonName) {
             await ctx.reply('❌ Missing required fields: courseId, moduleName, lessonName', {
                 reply_to_message_id: ctx.message.message_id
             });
             return;
         }
- 
-        // Check if course exists
+
         const course = await ShopProduct.findById(metadata.courseId).catch(() => null);
         if (!course) {
             await ctx.reply(`❌ Course not found: ${metadata.courseId}`, {
@@ -1121,8 +1164,7 @@ bot.on('text', async (ctx) => {
             });
             return;
         }
- 
-        // Create lesson in database
+
         const lesson = await CourseLesson.create({
             courseId: metadata.courseId,
             moduleName: metadata.moduleName,
@@ -1131,8 +1173,7 @@ bot.on('text', async (ctx) => {
             duration: session.duration,
             order: metadata.order || 0
         });
- 
-        // Success response
+
         const successMsg = `
 ✅ *LESSON CREATED*
  
@@ -1144,20 +1185,16 @@ bot.on('text', async (ctx) => {
  
 Video is now ready to stream!
         `;
- 
+
         await ctx.reply(successMsg, {
             parse_mode: 'Markdown',
             reply_to_message_id: ctx.message.message_id
         });
- 
-        // Log action
+
         await logAdminAction(ctx.from, 'lesson_created', `Created lesson: ${metadata.lessonName} in course ${course.title}`);
- 
-        // Clear session
         adminVideoSessions.delete(ctx.from.id);
- 
         console.log(`[Lesson Created] ${metadata.lessonName} in ${course.title}`);
- 
+
     } catch (err) {
         console.error('[Text handler error]:', err);
         ctx.reply('❌ Error creating lesson: ' + err.message);
@@ -3574,7 +3611,7 @@ app.get('/api/shop/product/:productId', async (req, res) => {
     try {
         const { productId } = req.params;
 
-        const product = await ShopProduct.findById(productId);
+        const product = await ShopProduct.findById(productId).select('-telegram_file_id');
         if (!product) {
             return res.status(404).json({ error: 'Product not found' });
         }
@@ -3690,7 +3727,36 @@ app.post('/api/secure/purchase-course', validateInitData, async (req, res) => {
         res.status(500).json({ error: 'Purchase failed' });
     }
 });
+// Download purchased APK
+app.get('/api/download-apk', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { productId } = req.query;
 
+        if (!productId) {
+            return res.status(400).json({ error: 'productId required' });
+        }
+
+        const purchase = await UserPurchase.findOne({ userId, productId, status: 'active' });
+        if (!purchase) {
+            return res.status(403).json({ error: 'You do not own this product' });
+        }
+
+        const product = await ShopProduct.findById(productId);
+        if (!product || product.type !== 'apk' || !product.telegram_file_id) {
+            return res.status(404).json({ error: 'APK not available' });
+        }
+
+        const fileInfo = await bot.telegram.getFile(product.telegram_file_id);
+        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${fileInfo.file_path}`;
+
+        res.redirect(telegramDownloadUrl);
+
+    } catch (err) {
+        console.error('[APK Download Error]:', err);
+        res.status(500).json({ error: 'Download failed' });
+    }
+});
 // =====================================================
 // ADMIN SHOP ROUTES
 // =====================================================
