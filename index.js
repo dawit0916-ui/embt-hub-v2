@@ -947,7 +947,10 @@ bot.on('message_reaction', async (ctx, next) => {
     return next();
   }
 });
-
+bot.use((ctx, next) => {
+    console.log(`[RAW UPDATE] type=${ctx.updateType} chatId=${ctx.chat?.id}`);
+    return next();
+});
 bot.on('message', async (ctx, next) => {
   try {
     if (activeTask.type !== 'comment') return next();
