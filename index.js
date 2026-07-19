@@ -915,118 +915,39 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
-bot.command('uploadcourse', async (ctx) => {
-    if (!admins.includes(ctx.from.id)) {
-        return ctx.reply('❌ Admin only');
-    }
- 
-    const helpMsg = `
-📹 *COURSE VIDEO UPLOAD GUIDE*
- 
-1️⃣ Send a video file (or forward from channel)
-2️⃣ Bot will reply with file_id
-3️⃣ Send course metadata as JSON:
- 
-\`\`\`json
-{
-  "courseId": "ObjectId or string ID",
-  "moduleName": "Module 1: Basics",
-  "lessonName": "Getting Started",
-  "order": 1
-}
-\`\`\`
- 
-Or create directly via web admin panel:
-Shop Manager → Courses → Add Lesson
- 
-Questions? Contact @support
-    `;
- 
-    ctx.reply(helpMsg, { parse_mode: 'Markdown' });
-});
-bot.command('shop', async (ctx) => {
-    try {
-        const userId = ctx.from.id;
-        const user = await User.findOne({ user_id: userId });
- 
-        if (!user) {
-            return ctx.reply('❌ User not found');
-        }
- 
-        const purchaseCount = await UserPurchase.countDocuments({
-            userId,
-            status: 'active'
-        });
- 
-        const totalProducts = await ShopProduct.countDocuments({ active: true });
-        const MINI_APP_URL = process.env.MINI_APP_URL || 'https://mini-app-ui-embta.vercel.app';
-
-      const message = `
-🛍️ *DASH EARN SHOP*
- 
-💰 Your Balance: *${user.balance} DASH*
-📚 Your Purchases: *${purchaseCount}*
-📦 Available Products: *${totalProducts}*
- 
-✨ *Shop Features:*
-📚 Professional Courses
-💻 Ready-to-use APKs
-🔒 Secure Video Streaming
-⭐ Lifetime Access
- 
-📲 Open the Shop tab in the app to browse!
-    `;
-
-await ctx.reply(message, {
-    parse_mode: 'Markdown',
-    ...Markup.inlineKeyboard([
-        [Markup.button.webApp('🛍️ Open Shop', MINI_APP_URL)],
-        [Markup.button.callback('📚 View Courses', 'shop_courses')],
-        [Markup.button.callback('💰 Check Balance', 'check_balance')]
-    ])
-});
-    } catch (err) {
-        console.error('[Shop command error]:', err);
-        ctx.reply('❌ Error loading shop info');
-    }
-});
-// ===== REACTION TASK LISTENER (DEBUG) =====
-bot.on('message_reaction', async (ctx) => {
+bot.on('message_reaction', async (ctx, next) => {
   try {
-    console.log('=== REACTION DETECTED ===');
-    console.log('Chat ID:', ctx.chat.id);
-    console.log('Active Task Type:', activeTask.type);
-    
-    if (activeTask.type !== 'reaction') return console.warn('❌ Not reaction task');
-    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return console.warn(`❌ Wrong chat ID`);
+    if (activeTask.type !== 'reaction') return next();
+    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return next();
 
     const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
-    if (message_id !== activeTask.messageId) return console.warn(`❌ Wrong message`);
+    if (message_id !== activeTask.messageId) return next();
 
     const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return console.warn(`❌ Wrong emoji`);
+    if (!hasTargetEmoji) return next();
 
-    console.log(`✅ Logging reaction to PendingReaction: user=${user_id}, msg=${message_id}, emoji=${activeTask.emoji}`);
+    if (!user_id) {
+      console.warn('⚠️ Reaction has no user_id — likely an anonymous/channel-level reaction');
+      return;
+    }
 
-    // WRITE TO PENDING REACTIONS (not CompletedTask)
     await PendingReaction.findOneAndUpdate(
       { userId: user_id, messageId: String(message_id) },
       { userId: user_id, messageId: String(message_id), emoji: activeTask.emoji },
       { upsert: true, new: true }
     );
 
-    // NOTIFY USER
     await bot.telegram.sendMessage(
       user_id,
       `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
     );
 
-    console.log(`✅ Reaction logged for user ${user_id}`);
-
   } catch (err) {
     console.error('Error in reaction handler:', err.message);
+    return next();
   }
 });
+
 bot.on('message', async (ctx, next) => {
   try {
     if (activeTask.type !== 'comment') return next();
