@@ -915,42 +915,7 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
-bot.on('message_reaction', async (ctx, next) => {
-  try {
-    if (activeTask.type !== 'reaction') return next();
-    if (ctx.chat.id !== PUBLIC_CHANNEL_ID) return next();
 
-    const { user_id, message_id, new_reaction } = ctx.update.message_reaction;
-    if (message_id !== activeTask.messageId) return next();
-
-    const hasTargetEmoji = new_reaction?.some(r => r.emoji === activeTask.emoji);
-    if (!hasTargetEmoji) return next();
-
-    if (!user_id) {
-      console.warn('⚠️ Reaction has no user_id — likely an anonymous/channel-level reaction');
-      return;
-    }
-
-    await PendingReaction.findOneAndUpdate(
-      { userId: user_id, messageId: String(message_id) },
-      { userId: user_id, messageId: String(message_id), emoji: activeTask.emoji },
-      { upsert: true, new: true }
-    );
-
-    await bot.telegram.sendMessage(
-      user_id,
-      `🔥 Reaction detected! Open the Mini App and tap "Verify Task" to claim your reward.`
-    );
-
-  } catch (err) {
-    console.error('Error in reaction handler:', err.message);
-    return next();
-  }
-});
-bot.use((ctx, next) => {
-    console.log(`[RAW UPDATE] type=${ctx.updateType} chatId=${ctx.chat?.id}`);
-    return next();
-});
 bot.on('message', async (ctx, next) => {
   try {
     if (activeTask.type !== 'comment') return next();
@@ -2470,7 +2435,42 @@ app.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (req
     res.status(500).json({ success: false, message: 'Verification failed' });
   }
 });
+app.post('/api/secure/daily-tasks/mark-pending-reaction', validateInitData, async (req, res) => {
+  try {
+    const userId = req.tgUser.id;
 
+    if (activeTask.type !== 'reaction') {
+      return res.status(400).json({ success: false, message: 'No reaction task active today' });
+    }
+
+    const taskKey = String(activeTask.messageId);
+
+    const alreadyClaimed = await CompletedTask.findOne({ userId, taskType: 'reaction', taskKey });
+    if (alreadyClaimed) {
+      return res.json({ success: true }); // already done, nothing to do
+    }
+
+    // Respond right away — don't make the button/link wait
+    res.json({ success: true });
+
+    // Write the pending record 5 seconds later, in the background
+    setTimeout(async () => {
+      try {
+        await PendingReaction.findOneAndUpdate(
+          { userId, messageId: taskKey },
+          { userId, messageId: taskKey, emoji: activeTask.emoji, createdAt: new Date() },
+          { upsert: true, new: true }
+        );
+      } catch (err) {
+        console.error('Delayed pending reaction write error:', err);
+      }
+    }, 5000);
+
+  } catch (err) {
+    console.error('Mark pending reaction error:', err);
+    res.status(500).json({ success: false });
+  }
+});
 app.get('/api/settings', async (req, res) => res.json(await getSettings()));
 app.post('/api/settings/update', validateAdmin, async (req, res) => { await Settings.updateOne({}, req.body); res.json({ success: true }); });
 
