@@ -664,7 +664,7 @@ let activeTask = {
   messageId: null
 };
 
-async function updateDailyConfig() {
+async function updateDailyConfig(attempt = 1) {
   try {
     const chat = await bot.telegram.getChat(CONFIG_CHANNEL_ID);
     const text = chat.pinned_message?.text || '';
@@ -694,12 +694,20 @@ async function updateDailyConfig() {
     }
 
     console.log('✅ Active task today:', activeTask);
+
   } catch (err) {
-    console.error('Error reading CMS config:', err);
+    console.error(`Error reading CMS config (attempt ${attempt}):`, err.message);
+
+    if (attempt < 3) {
+      const delay = attempt * 3000; // 3s, then 6s
+      setTimeout(() => updateDailyConfig(attempt + 1), delay);
+    } else {
+      console.error('⚠️ CMS config fetch failed after 3 attempts — keeping previous activeTask until next scheduled poll.');
+    }
   }
 }
 
-setInterval(updateDailyConfig, 5 * 60 * 1000);
+setInterval(() => updateDailyConfig(), 10 * 60 * 1000);
 updateDailyConfig();
 
 // --- GHOST VALIDATOR ENGINE ---
