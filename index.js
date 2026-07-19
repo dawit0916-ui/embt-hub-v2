@@ -2430,8 +2430,6 @@ app.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (req
 
     await PendingReaction.deleteOne({ userId, messageId: taskKey });
 
-    await sendPushNotification(userId, 'Task Verified! ✅', `+${reward} DASH earned`);
-
     res.json({
       success: true,
       reward_added: reward,
