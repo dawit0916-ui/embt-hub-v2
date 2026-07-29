@@ -7,12 +7,13 @@ async function getSettings() {
         if (!s) {
             s = await Settings.create({
                 min_withdraw: 0.2,
-                ref_bonus: 0.1,
+                ref_bonus: 500,
                 penalty_fee: 0.1,
                 withdrawals_enabled: true,
                 maintenance_mode: false,
-                ref_commission_percent: 10,
-                ref_bonus_amount: 0.05
+                ref_commission_percent: 5,
+                ref_bonus_amount: 500,
+                ref_tasks_required: 3
             });
         }
         return s;
