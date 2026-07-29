@@ -16,7 +16,7 @@ router.get('/api/secure/user/level', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
         const user = await User.findOne({ user_id: userId })
-            .select('level purchased_levels features_unlocked');
+            .select('level purchased_levels features_unlocked balance');
 
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
@@ -26,7 +26,8 @@ router.get('/api/secure/user/level', validateInitData, async (req, res) => {
             success: true,
             level: user.level || 0,
             purchased_levels: user.purchased_levels || [],
-            features_unlocked: user.features_unlocked || {}
+            features_unlocked: user.features_unlocked || {},
+            balance: user.balance || 0
         });
     } catch (err) {
         console.error('Get user level error:', err);
