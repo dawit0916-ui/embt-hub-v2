@@ -7,7 +7,8 @@ const Settings = mongoose.model('Settings', new mongoose.Schema({
     withdrawals_enabled: { type: Boolean, default: true },
     maintenance_mode: { type: Boolean, default: false },
     ref_commission_percent: { type: Number, default: 10 },
-    ref_bonus_amount: { type: Number, default: 0.05 }
+    ref_bonus_amount: { type: Number, default: 0.05 },
+    ref_tasks_required: { type: Number, default: 3 }
 }));
 
 module.exports = Settings;
