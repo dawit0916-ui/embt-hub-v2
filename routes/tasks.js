@@ -158,9 +158,21 @@ if (task.duration && DURATION_LEVEL_REQUIREMENT[task.duration]) {
             }
         );
 
-        // 6. Referral commission
+        // 6. Referral commission — use the REFERRER's own level commission rate
+        // instead of one flat global rate, so buying levels actually raises
+        // your commission the way the level detail drawer promises.
         if (user.referred_by) {
-    const commission = task.reward * ((settings.ref_commission_percent || 10) / 100);
+    const referrer = await User.findOne({ user_id: user.referred_by }).select('level');
+    let commissionPercent = settings.ref_commission_percent || 10; // fallback: no level yet / config missing
+
+    if (referrer && referrer.level > 0) {
+        const referrerLevelConfig = await LevelConfig.findOne({ level: referrer.level });
+        if (referrerLevelConfig && typeof referrerLevelConfig.commission_percent === 'number') {
+            commissionPercent = referrerLevelConfig.commission_percent;
+        }
+    }
+
+    const commission = task.reward * (commissionPercent / 100);
     await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
     await ReferralEarning.updateOne(
         { referrerId: user.referred_by, friendId: userId },
@@ -170,7 +182,8 @@ if (task.duration && DURATION_LEVEL_REQUIREMENT[task.duration]) {
 }
 
         // 7. Referral milestone bonus
-        if (user.referred_by && !user.referral_paid && currentTasksDone >= 3) {
+        const requiredReferralTasks = settings.ref_tasks_required || 3;
+        if (user.referred_by && !user.referral_paid && currentTasksDone >= requiredReferralTasks) {
             const updateReferrer = await User.updateOne(
                 { user_id: userId, referral_paid: { $ne: true } },
                 { $set: { referral_paid: true } }
