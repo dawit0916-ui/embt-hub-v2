@@ -4,7 +4,7 @@ const router = express.Router();
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
-const { ShopProduct, CourseLesson, UserPurchase, User } = require('../models');
+const { ShopProduct, CourseLesson, UserPurchase, User, LevelConfig } = require('../models');
 const { logAdminAction } = require('../utils/logAdminAction');
 
 // =====================================================
@@ -110,22 +110,37 @@ router.post('/api/secure/purchase-course', validateInitData, async (req, res) =>
             return res.status(400).json({ error: 'You already own this product' });
         }
 
-        // 4. Check balance
-        if (user.balance < product.price) {
+        // 4. Apply level-based discount — courses only, per your level's
+        // cost_discount_percent (100 = no discount, 80 = 20% off, etc.)
+        let finalPrice = product.price;
+        let discountPercent = 0;
+        if (product.type === 'course' && user.level > 0) {
+            const levelConfig = await LevelConfig.findOne({ level: user.level });
+            const discountFactor = levelConfig?.cost_discount_percent ?? 100;
+            if (discountFactor < 100) {
+                discountPercent = 100 - discountFactor;
+                finalPrice = Math.round(product.price * (discountFactor / 100));
+            }
+        }
+
+        // 5. Check balance (against the discounted price)
+        if (user.balance < finalPrice) {
             return res.status(400).json({
-                error: `Insufficient DASH. You need ${product.price} but have ${user.balance}`
+                error: `Insufficient DASH. You need ${finalPrice} but have ${user.balance}`
             });
         }
 
-        // 5. Deduct price + create purchase record
+        // 6. Deduct price + create purchase record
         const updatedUser = await User.findOneAndUpdate(
             { user_id: userId },
             {
-                $inc: { balance: -product.price },
+                $inc: { balance: -finalPrice },
                 $push: {
                     history: {
-                        title: `Course Purchase: ${product.title}`,
-                        reward: -product.price,
+                        title: discountPercent > 0
+                            ? `Course Purchase: ${product.title} (${discountPercent}% level discount)`
+                            : `Course Purchase: ${product.title}`,
+                        reward: -finalPrice,
                         taskId: `shop_${productId}`,
                         date: new Date()
                     }
@@ -138,15 +153,19 @@ router.post('/api/secure/purchase-course', validateInitData, async (req, res) =>
             userId,
             productId,
             type: product.type,
-            price: product.price
+            price: finalPrice
         });
 
         // 6. Log activity
-        await logAdminAction({ id: userId, first_name: user.first_name }, 'purchase_course', `Purchased ${product.title} for ${product.price} DASH`);
+        await logAdminAction({ id: userId, first_name: user.first_name }, 'purchase_course', `Purchased ${product.title} for ${finalPrice} DASH${discountPercent > 0 ? ` (${discountPercent}% level discount applied)` : ''}`);
 
         res.json({
             success: true,
-            message: `Successfully purchased ${product.title}!`,
+            message: discountPercent > 0
+                ? `Successfully purchased ${product.title}! (${discountPercent}% level discount applied)`
+                : `Successfully purchased ${product.title}!`,
+            pricePaid: finalPrice,
+            discountPercent,
             newBalance: updatedUser.balance
         });
 
