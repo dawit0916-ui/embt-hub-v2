@@ -89,13 +89,13 @@ router.get('/api/admin/users', validateAdmin, async (req, res) => {
                 username: u.username || 'N/A',
                 first_name: u.first_name || 'Member',
                 balance: u.balance || 0,
-
+                level: u.level || 0,
                 total_earned: u.total_earned || 0,
                 referralCount: u.referralCount || 0,
                 tasksCompleted: u.completed_tasks ? u.completed_tasks.length : 0,
-                tasks_added: u.tasks_added || 0,
                 is_banned: u.is_banned || false,
-                red_flag: u.red_flag || false
+                red_flag: u.red_flag || false,
+                createdAt: u.createdAt || null
             }))
         });
 
@@ -110,7 +110,7 @@ router.get('/api/admin/users', validateAdmin, async (req, res) => {
 // 🛠️ POST UPDATE MODIFIER (Instantly modify users from your front-end interface)
 router.post('/api/admin/user/update', validateAdmin, async (req, res) => {
     try {
-        const { target_user_id, balance, points, coins, is_banned, red_flag, tasks_added } = req.body;
+        const { target_user_id, balance, is_banned, red_flag } = req.body;
 
         if (!target_user_id) {
             return res.status(400).json({ error: "Target Identity Specification parameter is missing." });
@@ -119,8 +119,6 @@ router.post('/api/admin/user/update', validateAdmin, async (req, res) => {
         // 1. Map incoming payload adjustments cleanly into an update object
         let dynamicUpdates = {};
         if (balance !== undefined) dynamicUpdates.balance = Number(balance);
-
-        if (tasks_added !== undefined) dynamicUpdates.tasks_added = Number(tasks_added);
         if (is_banned !== undefined) dynamicUpdates.is_banned = Boolean(is_banned);
         if (red_flag !== undefined) dynamicUpdates.red_flag = Boolean(red_flag);
 
