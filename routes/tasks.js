@@ -238,6 +238,43 @@ router.delete('/api/admin/tasks/delete/:id', validateAdmin, async (req, res) => 
     }
 });
 
+// 3.5 Update task — previously missing entirely; a task could be created
+// or deleted but never edited, so fixing a typo meant delete + recreate.
+router.put('/api/admin/tasks/update/:id', validateAdmin, async (req, res) => {
+    try {
+        const taskId = req.params.id;
+        const { title, description, image, category, url, reward, type, max_users, enabled } = req.body;
+
+        let updates = {};
+        if (title !== undefined) updates.title = title;
+        if (description !== undefined) updates.description = description;
+        if (image !== undefined) updates.image = image;
+        if (category !== undefined) updates.category = category;
+        if (url !== undefined) updates.url = url;
+        if (reward !== undefined) updates.reward = Number(reward);
+        if (type !== undefined) updates.type = type;
+        if (max_users !== undefined) updates.max_users = Number(max_users);
+        if (enabled !== undefined) updates.enabled = Boolean(enabled);
+
+        const updatedTask = await Task.findOneAndUpdate(
+            { id: taskId },
+            { $set: updates },
+            { new: true }
+        );
+
+        if (!updatedTask) {
+            return res.status(404).json({ error: "Task not found." });
+        }
+
+        await logAdminAction(req.adminUser, 'task_updated', `Updated task: ${updatedTask.title}`);
+        return res.json({ success: true, task: updatedTask });
+
+    } catch (err) {
+        console.error("Update task error:", err);
+        return res.status(500).json({ error: "Failed to update task." });
+    }
+});
+
 
 // ==========================================================================
 // DAILY RESET TASKS ENDPOINTS
