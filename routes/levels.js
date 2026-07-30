@@ -22,12 +22,20 @@ router.get('/api/secure/user/level', validateInitData, async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        let courseDiscountPercent = 0;
+        if (user.level > 0) {
+            const levelConfig = await LevelConfig.findOne({ level: user.level });
+            const discountFactor = levelConfig?.cost_discount_percent ?? 100;
+            if (discountFactor < 100) courseDiscountPercent = 100 - discountFactor;
+        }
+
         return res.json({
             success: true,
             level: user.level || 0,
             purchased_levels: user.purchased_levels || [],
             features_unlocked: user.features_unlocked || {},
-            balance: user.balance || 0
+            balance: user.balance || 0,
+            courseDiscountPercent
         });
     } catch (err) {
         console.error('Get user level error:', err);
