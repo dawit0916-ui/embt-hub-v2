@@ -243,7 +243,7 @@ router.delete('/api/admin/tasks/delete/:id', validateAdmin, async (req, res) => 
 router.put('/api/admin/tasks/update/:id', validateAdmin, async (req, res) => {
     try {
         const taskId = req.params.id;
-        const { title, description, image, category, url, reward, type, max_users, enabled } = req.body;
+        const { title, description, image, category, url, reward, type, duration, max_users, enabled } = req.body;
 
         let updates = {};
         if (title !== undefined) updates.title = title;
@@ -253,6 +253,7 @@ router.put('/api/admin/tasks/update/:id', validateAdmin, async (req, res) => {
         if (url !== undefined) updates.url = url;
         if (reward !== undefined) updates.reward = Number(reward);
         if (type !== undefined) updates.type = type;
+        if (duration !== undefined) updates.duration = duration;
         if (max_users !== undefined) updates.max_users = Number(max_users);
         if (enabled !== undefined) updates.enabled = Boolean(enabled);
 
