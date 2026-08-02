@@ -2,7 +2,7 @@ const { Markup } = require('telegraf');
 const bot = require('./bot');
 const taskState = require('./config');
 const { admins, PUBLIC_GROUP_ID, STORAGE_CHANNEL_ID } = require('../config/constants');
-const { User, CompletedTask, UserReminder, ShopProduct, CourseLesson } = require('../models');
+const { User, CompletedTask, UserReminder, ShopProduct, CourseLesson, LevelConfig } = require('../models');
 const { logAdminAction } = require('../utils/logAdminAction');
 
 // Track admin sessions for multi-step video/APK upload workflow
@@ -78,17 +78,20 @@ bot.start(async (ctx) => {
 
 bot.on('message', async (ctx, next) => {
   try {
-    if (taskState.activeTask.type !== 'comment') return next();
     if (ctx.chat.id !== PUBLIC_GROUP_ID) return next();
     if (!ctx.message.text) return next();
 
     const text = ctx.message.text.trim().toUpperCase();
-    if (text !== taskState.activeTask.word) return next();
+
+    // Match against ANY comment-type task currently in the pool, not just
+    // one global word.
+    const matchedTask = taskState.tasks.find(t => t.type === 'comment' && t.word === text);
+    if (!matchedTask) return next();
 
     const userId = ctx.from.id;
-    const todayKey = new Date().toISOString().slice(0, 10);
+    const dateKey = new Date().toISOString().slice(0, 10);
 
-    const already = await CompletedTask.findOne({ userId, taskType: 'comment', taskKey: todayKey });
+    const already = await CompletedTask.findOne({ userId, taskType: 'comment', taskKey: matchedTask.taskKey, dateKey });
     if (already) return; // duplicate — stop here, no need to pass through
 
     let user = await User.findOne({ user_id: userId });
@@ -96,10 +99,22 @@ bot.on('message', async (ctx, next) => {
       user = await User.create({ user_id: userId, username: ctx.from.username || null, balance: 0 });
     }
 
-    const level = user.level || 1;
-    const reward = 50 * level;
+    // dailyLimit is shared across comment + reaction tasks combined
+    const level = user.level || 0;
+    const levelConfig = level > 0 ? await LevelConfig.findOne({ level }) : null;
+    const dailyLimit = levelConfig?.daily_task_limit || 1;
+    const reward = levelConfig?.daily_task_reward || 500;
 
-    await CompletedTask.create({ userId, taskType: 'comment', taskKey: todayKey });
+    const completedTodayCount = await CompletedTask.countDocuments({ userId, dateKey });
+    if (completedTodayCount >= dailyLimit) {
+      await bot.telegram.sendMessage(
+        userId,
+        `⚠️ You've already hit today's task limit (${completedTodayCount}/${dailyLimit}). Come back tomorrow!`
+      );
+      return;
+    }
+
+    await CompletedTask.create({ userId, taskType: 'comment', taskKey: matchedTask.taskKey, dateKey });
 
     user.balance += reward;
     user.total_earned = (user.total_earned || 0) + reward;
