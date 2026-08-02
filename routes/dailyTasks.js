@@ -6,42 +6,81 @@ const taskState = require('../bot/config');
 const { User, CompletedTask, PendingReaction, Task, LevelConfig, DailyTaskProgress } = require('../models');
 const { getUTCDayStart, getNextResetTime } = require('../utils/time');
 
+function todayKey() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+// How many Secret Word / Emoji Reaction tasks this user has already
+// completed today, and which specific taskKeys — dailyLimit is shared
+// across both task types combined, not tracked separately per type.
+async function getTodayCompletion(userId) {
+    const dateKey = todayKey();
+    const completedDocs = await CompletedTask.find({ userId, dateKey });
+    return {
+        dateKey,
+        completedCount: completedDocs.length,
+        completedKeys: completedDocs.map(d => d.taskKey)
+    };
+}
+
 // GET /api/secure/daily-tasks/today
-// Returns whichever task is active today — comment OR reaction, never both
+// Randomly serves one not-yet-completed task from today's pool, up to the
+// user's level daily_task_limit. Calling this again after completing one
+// task correctly serves the next one (if the limit isn't reached yet).
 router.get('/api/secure/daily-tasks/today', validateInitData, async (req, res) => {
   try {
     const userId = req.tgUser.id;
     const user = await User.findOne({ user_id: userId });
-    const level = user?.level || 1;
-    const reward = 50 * level;
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (taskState.activeTask.type === 'comment') {
-      const todayKey = new Date().toISOString().slice(0, 10);
-      const completed = await CompletedTask.findOne({ userId, taskType: 'comment', taskKey: todayKey });
+    const level = user.level || 0;
+    const levelConfig = level > 0 ? await LevelConfig.findOne({ level }) : null;
+    const dailyLimit = levelConfig?.daily_task_limit || 1;
+    const reward = levelConfig?.daily_task_reward || 500;
+
+    const { completedCount, completedKeys } = await getTodayCompletion(userId);
+
+    if (completedCount >= dailyLimit) {
+      return res.json({
+        success: false,
+        message: `Daily limit reached (${completedCount}/${dailyLimit})`,
+        completedToday: completedCount,
+        dailyLimit
+      });
+    }
+
+    const pool = taskState.tasks.filter(t => !completedKeys.includes(t.taskKey));
+    if (pool.length === 0) {
+      return res.json({ success: false, message: 'No tasks left for you today — check back tomorrow!' });
+    }
+
+    // Random, not-yet-done task from the pool
+    const task = pool[Math.floor(Math.random() * pool.length)];
+
+    if (task.type === 'comment') {
       return res.json({
         success: true,
+        task_key: task.taskKey,
         task_type: 'comment',
-        secret_word: taskState.activeTask.word,
+        secret_word: task.word,
         group_url: process.env.TELEGRAM_GROUP_URL,
         reward,
-        completed: !!completed
+        completedToday: completedCount,
+        dailyLimit
       });
     }
 
-    if (taskState.activeTask.type === 'reaction') {
-      const completed = await CompletedTask.findOne({ userId, taskType: 'reaction', taskKey: String(taskState.activeTask.messageId) });
-      return res.json({
-        success: true,
-        task_type: 'reaction',
-        target_emoji: taskState.activeTask.emoji,
-        message_id: taskState.activeTask.messageId,
-        post_direct_link: `https://t.me/${process.env.TELEGRAM_CHANNEL_NAME}/${taskState.activeTask.messageId}`,
-        reward,
-        completed: !!completed
-      });
-    }
-
-    return res.json({ success: false, message: 'No active task configured today' });
+    return res.json({
+      success: true,
+      task_key: task.taskKey,
+      task_type: 'reaction',
+      target_emoji: task.emoji,
+      message_id: task.messageId,
+      post_direct_link: `https://t.me/${process.env.TELEGRAM_CHANNEL_NAME}/${task.messageId}`,
+      reward,
+      completedToday: completedCount,
+      dailyLimit
+    });
 
   } catch (err) {
     console.error('Error fetching today\'s task:', err);
@@ -50,23 +89,37 @@ router.get('/api/secure/daily-tasks/today', validateInitData, async (req, res) =
 });
 
 // POST /api/secure/daily-tasks/verify-reaction
+// Body: { taskKey } — needed now since multiple reaction tasks can be
+// active in the same pool.
 router.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (req, res) => {
   try {
     const userId = req.tgUser.id;
+    const { taskKey } = req.body;
 
-    if (taskState.activeTask.type !== 'reaction') {
-      return res.status(400).json({ success: false, message: 'No reaction task active today' });
+    const task = taskState.tasks.find(t => t.taskKey === taskKey && t.type === 'reaction');
+    if (!task) {
+      return res.status(400).json({ success: false, message: 'That reaction task is no longer active' });
     }
 
-    const taskKey = String(taskState.activeTask.messageId);
-    const requiredEmoji = taskState.activeTask.emoji;
+    const user = await User.findOne({ user_id: userId });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const alreadyClaimed = await CompletedTask.findOne({ userId, taskType: 'reaction', taskKey });
-    if (alreadyClaimed) {
+    const level = user.level || 0;
+    const levelConfig = level > 0 ? await LevelConfig.findOne({ level }) : null;
+    const dailyLimit = levelConfig?.daily_task_limit || 1;
+    const reward = levelConfig?.daily_task_reward || 500;
+
+    const { dateKey, completedCount, completedKeys } = await getTodayCompletion(userId);
+
+    if (completedKeys.includes(taskKey)) {
       return res.status(400).json({ success: false, message: 'Already claimed' });
     }
+    if (completedCount >= dailyLimit) {
+      return res.status(400).json({ success: false, message: `Daily limit reached (${completedCount}/${dailyLimit})` });
+    }
 
-    const reactionFound = await PendingReaction.findOne({ userId, messageId: taskKey });
+    const messageIdStr = String(task.messageId);
+    const reactionFound = await PendingReaction.findOne({ userId, messageId: messageIdStr });
     if (!reactionFound) {
       return res.status(400).json({
         success: false,
@@ -74,33 +127,27 @@ router.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (
       });
     }
 
-    if (reactionFound.emoji !== requiredEmoji) {
+    if (reactionFound.emoji !== task.emoji) {
       return res.status(400).json({
         success: false,
-        message: `You reacted with ${reactionFound.emoji}, but the task requires ${requiredEmoji}!`
+        message: `You reacted with ${reactionFound.emoji}, but the task requires ${task.emoji}!`
       });
     }
 
-    const user = await User.findOne({ user_id: userId });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const level = user.level || 1;
-    const reward = 50 * level;
-
-    await CompletedTask.create({ userId, taskType: 'reaction', taskKey });
+    await CompletedTask.create({ userId, taskType: 'reaction', taskKey, dateKey });
 
     user.balance += reward;
     user.total_earned = (user.total_earned || 0) + reward;
     await user.save();
 
-    await PendingReaction.deleteOne({ userId, messageId: taskKey });
+    await PendingReaction.deleteOne({ userId, messageId: messageIdStr });
 
     res.json({
       success: true,
       reward_added: reward,
-      new_balance: user.balance
+      new_balance: user.balance,
+      completedToday: completedCount + 1,
+      dailyLimit
     });
 
   } catch (err) {
@@ -109,20 +156,24 @@ router.post('/api/secure/daily-tasks/verify-reaction', validateInitData, async (
   }
 });
 
+// POST /api/secure/daily-tasks/mark-pending-reaction
+// Body: { taskKey }
 router.post('/api/secure/daily-tasks/mark-pending-reaction', validateInitData, async (req, res) => {
   try {
     const userId = req.tgUser.id;
+    const { taskKey } = req.body;
 
-    if (taskState.activeTask.type !== 'reaction') {
-      return res.status(400).json({ success: false, message: 'No reaction task active today' });
+    const task = taskState.tasks.find(t => t.taskKey === taskKey && t.type === 'reaction');
+    if (!task) {
+      return res.status(400).json({ success: false, message: 'That reaction task is no longer active' });
     }
 
-    const taskKey = String(taskState.activeTask.messageId);
-
-    const alreadyClaimed = await CompletedTask.findOne({ userId, taskType: 'reaction', taskKey });
-    if (alreadyClaimed) {
+    const { dateKey, completedKeys } = await getTodayCompletion(userId);
+    if (completedKeys.includes(taskKey)) {
       return res.json({ success: true }); // already done, nothing to do
     }
+
+    const messageIdStr = String(task.messageId);
 
     // Respond right away — don't make the button/link wait
     res.json({ success: true });
@@ -131,8 +182,8 @@ router.post('/api/secure/daily-tasks/mark-pending-reaction', validateInitData, a
     setTimeout(async () => {
       try {
         await PendingReaction.findOneAndUpdate(
-          { userId, messageId: taskKey },
-          { userId, messageId: taskKey, emoji: taskState.activeTask.emoji, createdAt: new Date() },
+          { userId, messageId: messageIdStr },
+          { userId, messageId: messageIdStr, emoji: task.emoji, createdAt: new Date() },
           { upsert: true, new: true }
         );
       } catch (err) {
@@ -147,7 +198,15 @@ router.post('/api/secure/daily-tasks/mark-pending-reaction', validateInitData, a
 });
 
 
-// Complete a daily task
+// ==========================================================================
+// SUPERSEDED — this route used the old single-task DailyTaskProgress system
+// for admin-created Task documents with type:'daily'. It was never actually
+// called from the frontend (confirmed by searching every JS file), and the
+// Secret Word / Emoji Reaction pool above now covers the "daily task" use
+// case with real level-gating and rewards. Commented out rather than
+// deleted, in case DailyTaskProgress-based tasks come back later.
+// ==========================================================================
+/*
 router.post('/api/secure/complete-daily-task', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
@@ -159,10 +218,8 @@ router.post('/api/secure/complete-daily-task', validateInitData, async (req, res
         const task = await Task.findOne({ id: taskId, enabled: true });
         if (!task) return res.status(404).json({ error: 'Task not found' });
 
-        // Fetch level config ONCE at the top
         const levelConfig = await LevelConfig.findOne({ level: user.level || 0 });
 
-        // 1.5 CHECK daily task feature + level limit
         if (!user.features_unlocked?.daily_tasks) {
             return res.status(403).json({
                 error: 'Daily tasks unlock at Level 2',
@@ -172,7 +229,6 @@ router.post('/api/secure/complete-daily-task', validateInitData, async (req, res
 
         const dailyLimit = levelConfig?.daily_task_limit || 1;
 
-        // Count completed daily tasks TODAY
         const dayStart = getUTCDayStart();
         const completedToday = await DailyTaskProgress.countDocuments({
             userId,
@@ -197,7 +253,6 @@ router.post('/api/secure/complete-daily-task', validateInitData, async (req, res
             });
         }
 
-        // Check if reset needed
         if (new Date() >= progress.resetAt) {
             progress.completedCount = 0;
             progress.claimedToday = false;
@@ -208,20 +263,15 @@ router.post('/api/secure/complete-daily-task', validateInitData, async (req, res
             return res.status(400).json({ error: 'Already completed today' });
         }
 
-        // Complete and claim reward
         progress.completedCount = 1;
         progress.claimedToday = true;
         progress.lastCompletedAt = new Date();
         await progress.save();
 
-        // Use the levelConfig already fetched above
         const dailyTaskReward = levelConfig?.daily_task_reward || 500;
-
-        // Apply multiplier (ad-based, not level-based)
         const multiplier = req.body.multiplier || 1.0;
         const finalReward = Math.floor(dailyTaskReward * multiplier);
 
-        // Award user
         await User.updateOne(
             { user_id: userId },
             {
@@ -248,5 +298,6 @@ router.post('/api/secure/complete-daily-task', validateInitData, async (req, res
         res.status(500).json({ error: 'Failed to complete task' });
     }
 });
+*/
 
 module.exports = router;
