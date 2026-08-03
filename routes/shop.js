@@ -244,28 +244,36 @@ router.get('/api/download-apk', validateInitData, async (req, res) => {
 // Create course
 router.post('/api/admin/shop/create-course', validateAdmin, async (req, res) => {
     try {
-        const { title, category, description, price, thumbnail } = req.body;
+        const { title, category, description, price, thumbnail, type, telegram_file_id } = req.body;
 
         if (!title || !price) {
             return res.status(400).json({ error: 'title and price required' });
         }
 
+        const productType = type === 'apk' ? 'apk' : 'course';
+
+        if (productType === 'apk' && !telegram_file_id) {
+            return res.status(400).json({ error: 'telegram_file_id required for APK products' });
+        }
+
         const product = await ShopProduct.create({
-            type: 'course',
+            type: productType,
             title,
             category: category || 'General',
             description: description || '',
             price: Number(price),
             thumbnail: thumbnail || '',
+            telegram_file_id: productType === 'apk' ? telegram_file_id : undefined,
             createdBy: req.adminUser.id
         });
 
-        await logAdminAction(req.adminUser, 'shop_create_course', `Created course: ${title}`);
+        await logAdminAction(req.adminUser, productType === 'apk' ? 'shop_create_apk' : 'shop_create_course', `Created ${productType}: ${title}`);
 
         res.json({
             success: true,
-            message: 'Course created successfully',
-            courseId: product._id
+            message: productType === 'apk' ? 'APK created successfully' : 'Course created successfully',
+            productId: product._id,
+            courseId: product._id // kept for backward compatibility
         });
 
     } catch (err) {
