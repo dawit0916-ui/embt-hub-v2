@@ -4,9 +4,10 @@ const crypto = require('crypto');
 
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
-const { ActiveAd, AdWatch, User } = require('../models');
+const { ActiveAd, AdWatch, User, CompletedTask } = require('../models');
 const { getResetPeriodStart } = require('../utils/time');
 const { logAdminAction } = require('../utils/logAdminAction');
+const { FAST_TASK_ADSGRAM_BLOCK_ID } = require('../config/constants');
 
 router.post('/api/secure/ads/start-session', validateInitData, async (req, res) => {
     try {
@@ -244,6 +245,83 @@ router.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
     } catch (err) {
         console.error('Watch ad error:', err);
         res.status(500).json({ error: 'Failed to record watch' });
+    }
+});
+
+// ==========================================================================
+// FAST TASK (AdsGram task-widget) — unlocks at Level 2, same gate as Daily
+// Tasks. 3 claims/day, 100 DASH each. No admin config UI on purpose — the
+// block ID is a fixed env var (config/constants.js) and the reward/limit
+// are fixed constants below. Uses CompletedTask (not AdWatch) for daily
+// tracking since AdWatch auto-deletes after 10 minutes (fine for its
+// original short-lived session flow, wrong for a full-day claim limit).
+// ==========================================================================
+const FAST_TASK_DAILY_LIMIT = 3;
+const FAST_TASK_REWARD = 100;
+
+function fastTaskDateKey() {
+    return new Date().toISOString().slice(0, 10);
+}
+
+router.get('/api/secure/fast-task-config', validateInitData, async (req, res) => {
+    try {
+        const user = await User.findOne({ user_id: req.tgUser.id }).select('level features_unlocked');
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+        if (!user.features_unlocked?.daily_tasks) {
+            return res.status(403).json({ success: false, error: 'Fast Task unlocks at Level 2', unlocksAtLevel: 2 });
+        }
+
+        const dateKey = fastTaskDateKey();
+        const claimsToday = await CompletedTask.countDocuments({ userId: req.tgUser.id, taskType: 'fast_task', dateKey });
+
+        return res.json({
+            success: true,
+            enabled: !!FAST_TASK_ADSGRAM_BLOCK_ID,
+            blockId: FAST_TASK_ADSGRAM_BLOCK_ID,
+            reward: FAST_TASK_REWARD,
+            dailyLimit: FAST_TASK_DAILY_LIMIT,
+            claimsRemainingToday: Math.max(0, FAST_TASK_DAILY_LIMIT - claimsToday)
+        });
+    } catch (err) {
+        console.error('Fast task config error:', err);
+        res.status(500).json({ success: false, error: 'Failed to load config' });
+    }
+});
+
+router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+        if (user.is_banned) return res.status(403).json({ success: false, error: 'Account banned' });
+
+        if (!user.features_unlocked?.daily_tasks) {
+            return res.status(403).json({ success: false, error: 'Fast Task unlocks at Level 2', unlocksAtLevel: 2 });
+        }
+
+        const dateKey = fastTaskDateKey();
+        const claimsToday = await CompletedTask.countDocuments({ userId, taskType: 'fast_task', dateKey });
+
+        if (claimsToday >= FAST_TASK_DAILY_LIMIT) {
+            return res.status(400).json({ success: false, error: `Daily limit reached (${claimsToday}/${FAST_TASK_DAILY_LIMIT})` });
+        }
+
+        await CompletedTask.create({ userId, taskType: 'fast_task', taskKey: `fasttask_${claimsToday + 1}`, dateKey });
+
+        user.balance += FAST_TASK_REWARD;
+        user.total_earned = (user.total_earned || 0) + FAST_TASK_REWARD;
+        await user.save();
+
+        return res.json({
+            success: true,
+            reward: FAST_TASK_REWARD,
+            newBalance: user.balance,
+            claimsRemainingToday: FAST_TASK_DAILY_LIMIT - (claimsToday + 1)
+        });
+    } catch (err) {
+        console.error('Fast task claim error:', err);
+        res.status(500).json({ success: false, error: 'Failed to record claim' });
     }
 });
 
