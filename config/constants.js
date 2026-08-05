@@ -12,6 +12,11 @@ const PUBLIC_CHANNEL_ID = -1003473429839; // your channel
 
 const PORT = process.env.PORT || 3000;
 
+// AdsGram "task" widget block ID for the Fast Task feature. No admin UI for
+// this on purpose — set it once here via env var and it's live everywhere.
+// Get this ID from your AdsGram dashboard (Blocks section, "Task" format).
+const FAST_TASK_ADSGRAM_BLOCK_ID = process.env.FAST_TASK_ADSGRAM_BLOCK_ID || null;
+
 module.exports = {
     admins,
     STORAGE_CHANNEL_ID,
@@ -19,4 +24,5 @@ module.exports = {
     PUBLIC_GROUP_ID,
     PUBLIC_CHANNEL_ID,
     PORT,
+    FAST_TASK_ADSGRAM_BLOCK_ID,
 };
