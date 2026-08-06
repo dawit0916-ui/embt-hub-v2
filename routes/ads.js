@@ -301,13 +301,35 @@ router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) =>
         }
 
         const dateKey = fastTaskDateKey();
-        const claimsToday = await CompletedTask.countDocuments({ userId, taskType: 'fast_task', dateKey });
 
-        if (claimsToday >= FAST_TASK_DAILY_LIMIT) {
-            return res.status(400).json({ success: false, error: `Daily limit reached (${claimsToday}/${FAST_TASK_DAILY_LIMIT})` });
+        // Retry loop instead of "count then create": if two requests land
+        // at nearly the same time (e.g. the widget double-firing 'reward'),
+        // both might read the same count before either saves. Retrying on
+        // a duplicate-key collision lets the second request naturally claim
+        // the next slot instead of hard-failing with a 500.
+        let claimed = false;
+        let finalClaimsToday = 0;
+        for (let attempt = 0; attempt < FAST_TASK_DAILY_LIMIT + 1; attempt++) {
+            const claimsToday = await CompletedTask.countDocuments({ userId, taskType: 'fast_task', dateKey });
+
+            if (claimsToday >= FAST_TASK_DAILY_LIMIT) {
+                return res.status(400).json({ success: false, error: `Daily limit reached (${claimsToday}/${FAST_TASK_DAILY_LIMIT})` });
+            }
+
+            try {
+                await CompletedTask.create({ userId, taskType: 'fast_task', taskKey: `fasttask_${claimsToday + 1}`, dateKey });
+                claimed = true;
+                finalClaimsToday = claimsToday;
+                break;
+            } catch (createErr) {
+                if (createErr.code === 11000) continue; // slot taken by a concurrent request — retry next slot
+                throw createErr;
+            }
         }
 
-        await CompletedTask.create({ userId, taskType: 'fast_task', taskKey: `fasttask_${claimsToday + 1}`, dateKey });
+        if (!claimed) {
+            return res.status(400).json({ success: false, error: 'Daily limit reached' });
+        }
 
         user.balance += FAST_TASK_REWARD;
         user.total_earned = (user.total_earned || 0) + FAST_TASK_REWARD;
@@ -317,7 +339,7 @@ router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) =>
             success: true,
             reward: FAST_TASK_REWARD,
             newBalance: user.balance,
-            claimsRemainingToday: FAST_TASK_DAILY_LIMIT - (claimsToday + 1)
+            claimsRemainingToday: FAST_TASK_DAILY_LIMIT - (finalClaimsToday + 1)
         });
     } catch (err) {
         console.error('Fast task claim error:', err);
