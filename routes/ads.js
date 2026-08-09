@@ -209,6 +209,18 @@ router.get('/api/secure/available-ads', validateInitData, async (req, res) => {
     }
 });
 
+// ==========================================================================
+// SUPERSEDED — never called from the frontend (confirmed by searching every
+// JS file), and would 500 immediately if it ever were: it references
+// fields that don't exist on either schema (ad.maxWatchesPerDay,
+// AdWatch.viewedAt, AdWatch.watched — the real fields are watchesPerReset,
+// createdAt, and claimed) and never sets AdWatch's required sessionId
+// field. Looks like an earlier, abandoned draft of the ad-watch flow from
+// before the real session-based one (start-session / claim below) was
+// built. Commented out rather than deleted in case it's meant to come back
+// as a real, separate simple flow — but as written it cannot work.
+// ==========================================================================
+/*
 // Record that user watched an ad (call this AFTER ad completes)
 router.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
     try {
@@ -248,6 +260,7 @@ router.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
         res.status(500).json({ error: 'Failed to record watch' });
     }
 });
+*/
 
 // ==========================================================================
 // FAST TASK (AdsGram task-widget) — available to all users regardless of
