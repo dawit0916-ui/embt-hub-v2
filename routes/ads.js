@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
@@ -286,56 +287,75 @@ router.get('/api/secure/fast-task-config', validateInitData, async (req, res) =>
 });
 
 router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) => {
+    const userId = req.tgUser.id;
+    const session = await mongoose.startSession();
+
     try {
-        const userId = req.tgUser.id;
         const user = await User.findOne({ user_id: userId });
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
         if (user.is_banned) return res.status(403).json({ success: false, error: 'Account banned' });
 
         const dateKey = fastTaskDateKey();
+        let result = null;
 
-        // Retry loop instead of "count then create": if two requests land
-        // at nearly the same time (e.g. the widget double-firing 'reward'),
-        // both might read the same count before either saves. Retrying on
-        // a duplicate-key collision lets the second request naturally claim
-        // the next slot instead of hard-failing with a 500.
-        let claimed = false;
-        let finalClaimsToday = 0;
-        for (let attempt = 0; attempt < FAST_TASK_DAILY_LIMIT + 1; attempt++) {
-            const claimsToday = await CompletedTask.countDocuments({ userId, taskType: 'fast_task', dateKey });
+        // Everything inside here either fully commits (claim recorded AND
+        // balance credited) or fully rolls back on any error — no more
+        // possibility of "slot marked used, reward never paid", which is
+        // exactly the bug that caused claims to silently disappear before:
+        // the claim record and the balance update weren't atomic, so any
+        // failure between the two steps left a permanently unpaid claim.
+        await session.withTransaction(async () => {
+            let claimed = false;
+            let finalClaimsToday = 0;
 
-            if (claimsToday >= FAST_TASK_DAILY_LIMIT) {
-                return res.status(400).json({ success: false, error: `Daily limit reached (${claimsToday}/${FAST_TASK_DAILY_LIMIT})` });
+            for (let attempt = 0; attempt < FAST_TASK_DAILY_LIMIT + 1; attempt++) {
+                const claimsToday = await CompletedTask.countDocuments({ userId, taskType: 'fast_task', dateKey }).session(session);
+
+                if (claimsToday >= FAST_TASK_DAILY_LIMIT) {
+                    result = { status: 400, body: { success: false, error: `Daily limit reached (${claimsToday}/${FAST_TASK_DAILY_LIMIT})` } };
+                    return;
+                }
+
+                try {
+                    await CompletedTask.create([{ userId, taskType: 'fast_task', taskKey: `fasttask_${claimsToday + 1}`, dateKey }], { session });
+                    claimed = true;
+                    finalClaimsToday = claimsToday;
+                    break;
+                } catch (createErr) {
+                    if (createErr.code === 11000) continue; // slot taken by a concurrent request — retry next slot
+                    throw createErr;
+                }
             }
 
-            try {
-                await CompletedTask.create({ userId, taskType: 'fast_task', taskKey: `fasttask_${claimsToday + 1}`, dateKey });
-                claimed = true;
-                finalClaimsToday = claimsToday;
-                break;
-            } catch (createErr) {
-                if (createErr.code === 11000) continue; // slot taken by a concurrent request — retry next slot
-                throw createErr;
+            if (!claimed) {
+                result = { status: 400, body: { success: false, error: 'Daily limit reached' } };
+                return;
             }
-        }
 
-        if (!claimed) {
-            return res.status(400).json({ success: false, error: 'Daily limit reached' });
-        }
+            const updatedUser = await User.findOneAndUpdate(
+                { user_id: userId },
+                { $inc: { balance: FAST_TASK_REWARD, total_earned: FAST_TASK_REWARD } },
+                { new: true, session }
+            );
 
-        user.balance += FAST_TASK_REWARD;
-        user.total_earned = (user.total_earned || 0) + FAST_TASK_REWARD;
-        await user.save();
-
-        return res.json({
-            success: true,
-            reward: FAST_TASK_REWARD,
-            newBalance: user.balance,
-            claimsRemainingToday: FAST_TASK_DAILY_LIMIT - (finalClaimsToday + 1)
+            result = {
+                status: 200,
+                body: {
+                    success: true,
+                    reward: FAST_TASK_REWARD,
+                    newBalance: updatedUser.balance,
+                    claimsRemainingToday: FAST_TASK_DAILY_LIMIT - (finalClaimsToday + 1)
+                }
+            };
         });
+
+        return res.status(result.status).json(result.body);
+
     } catch (err) {
         console.error('Fast task claim error:', err);
         res.status(500).json({ success: false, error: 'Failed to record claim' });
+    } finally {
+        await session.endSession();
     }
 });
 
