@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 // Track which ad units we're currently offering
 const ActiveAd = mongoose.model('ActiveAd', new mongoose.Schema({
     adId:               { type: String, unique: true, required: true },
-    network:            { type: String, enum: ['adgrams', 'google_ads'] },
+    network:            { type: String, enum: ['adgrams', 'google_ads', 'monetag'] },
     unitId:             { type: String, required: true },
     reward:             { type: Number, required: true },        // DASH per view
     resetIntervalHours: { type: Number, default: 24 },          // reset every N hours
