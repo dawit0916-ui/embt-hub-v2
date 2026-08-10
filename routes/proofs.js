@@ -8,6 +8,22 @@ const bot = require('../bot/bot');
 const { Task, User, ProofSubmission } = require('../models');
 const { postToChannel, postPhotoToChannel, replyInChannel } = require('../utils/channel');
 const { logAdminAction } = require('../utils/logAdminAction');
+const { runGhostValidator } = require('../bot/ghostValidator');
+
+// This has been called by the admin panel's "Run Global Sweep" button since
+// the original monolithic file, but the route itself never existed —
+// runGhostValidator only ever ran via a 24-hour setInterval. Wiring it up
+// so the button actually does something on demand.
+router.post('/api/admin/run-sweep', validateAdmin, async (req, res) => {
+    try {
+        const result = await runGhostValidator(null);
+        await logAdminAction(req.adminUser, 'manual_sweep', `Manual sweep run — ${result.caughtCount} flagged`);
+        res.json({ success: true, flagged: result.caughtCount });
+    } catch (err) {
+        console.error('Manual sweep error:', err);
+        res.status(500).json({ error: 'Sweep failed to run' });
+    }
+});
 
 router.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
     try {
