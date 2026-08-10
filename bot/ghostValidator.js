@@ -33,7 +33,7 @@ async function runGhostValidator(ctx) {
                             }
                         );
 
-                        await bot.telegram.sendMessage(user.user_id, `🚩 *Account Flagged!* You left a channel. A ${settings.penalty_fee} USDT penalty applied.`);
+                        await bot.telegram.sendMessage(user.user_id, `🚩 *Account Flagged!* You left a channel. A ${settings.penalty_fee} DASH penalty applied.`);
                         break;
                     }
                 } catch (e) {
@@ -43,9 +43,11 @@ async function runGhostValidator(ctx) {
             }
         }
         if (ctx) await ctx.reply(`✨ *Sweep Complete!* Found and penalized ${caughtCount} cheaters.`);
+        return { success: true, caughtCount };
     } catch (globalError) {
         console.error("Ghost Validator Global Error:", globalError);
         if (ctx) await ctx.reply("❌ The validator encountered a critical error during the sweep.");
+        return { success: false, caughtCount: 0 };
     }
 }
 
