@@ -38,7 +38,7 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 user_id: user.user_id,
                 first_name: user.first_name || 'User',
                 balance: user.balance || 0,
-
+                level: user.level || 0, 
                 total_earned: user.total_earned || 0,
                 referrals: user.referralCount || 0,
                 tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
@@ -61,7 +61,7 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
             const defaultEmptyPayload = {
                 success: false,
                 balance: 0,
-
+                level: 0,
                 total_earned: 0,
                 referrals: 0,
                 tasksCompletedCount: 0,
