@@ -21,9 +21,9 @@ const PendingReaction = require('./pendingReaction');
 const CompletedTask = require('./completedTask');
 const ShopProduct = require('./shopProduct');
 // add these three lines wherever the other model requires/exports live
-const ImageStylePreset: require('./imageStylePreset'),
-const ImageGenLog: require('./imageGenLog'),
-const ImageGenConfig: require('./imageGenConfig'),
+const ImageStylePreset = require('./imageStylePreset'),
+const ImageGenLog = require('./imageGenLog'),
+const ImageGenConfig = require('./imageGenConfig'),
 const CourseLesson = require('./courseLesson');
 const UserPurchase = require('./userPurchase');
 
