@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer'); // new dependency — npm install multer
 const router = express.Router();
 
 const validateInitData = require('../middleware/validateInitData');
@@ -6,7 +7,9 @@ const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
 const { ShopProduct, CourseLesson, UserPurchase, User, LevelConfig } = require('../models');
 const { logAdminAction } = require('../utils/logAdminAction');
-
+const { admins, STORAGE_CHANNEL_ID } = require('../config/constants');
+const upload = multer({ storage: multer.memoryStorage() });
+const { ImageStylePreset, ImageGenLog, ImageGenConfig } = require('../models');
 // =====================================================
 // USER PURCHASE ROUTES
 // =====================================================
@@ -450,6 +453,220 @@ router.get('/api/admin/shop/stats', validateAdmin, async (req, res) => {
     } catch (err) {
         console.error('Get stats error:', err);
         res.status(500).json({ error: 'Failed to fetch stats' });
+    }
+});
+
+// =====================================================
+// AI IMAGE GENERATOR ROUTES
+// =====================================================
+
+router.get('/api/secure/shop/imagegen/config', validateInitData, async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+
+        const styles = await ImageStylePreset.find({ active: true })
+            .select('styleId name previewThumbnail')
+            .sort({ order: 1 });
+
+        let config = await ImageGenConfig.findOne();
+        if (!config) config = await ImageGenConfig.create({});
+
+        const startOfDay = new Date();
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const usesToday = await ImageGenLog.countDocuments({
+            userId, status: 'success', createdAt: { $gte: startOfDay }
+        });
+
+        res.json({
+            success: true,
+            styles,
+            cost: config.cost,
+            dailyCap: config.dailyCap,
+            usesToday
+        });
+    } catch (err) {
+        console.error('Get imagegen config error:', err);
+        res.status(500).json({ error: 'Failed to load AI image generator' });
+    }
+});
+
+router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.single('referenceImage'), async (req, res) => {
+    try {
+        const userId = req.tgUser.id;
+        const { styleId } = req.body;
+
+        if (!styleId || !req.file) {
+            return res.status(400).json({ error: 'styleId and referenceImage required' });
+        }
+
+        const style = await ImageStylePreset.findOne({ styleId, active: true });
+        if (!style) {
+            return res.status(404).json({ error: 'Style not found' });
+        }
+
+        const user = await User.findOne({ user_id: userId });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (user.is_banned) return res.status(403).json({ error: 'Account banned' });
+
+        let config = await ImageGenConfig.findOne();
+        if (!config) config = await ImageGenConfig.create({});
+
+        const startOfDay = new Date();
+        startOfDay.setUTCHours(0, 0, 0, 0);
+        const usesToday = await ImageGenLog.countDocuments({
+            userId, status: 'success', createdAt: { $gte: startOfDay }
+        });
+        if (usesToday >= config.dailyCap) {
+            return res.status(429).json({ error: 'Daily generation limit reached' });
+        }
+        if (user.balance < config.cost) {
+            return res.status(400).json({ error: `Insufficient DASH. You need ${config.cost} but have ${user.balance}` });
+        }
+
+        // Deduct up front, refund on failure — matches purchase-course pattern
+        const updatedUser = await User.findOneAndUpdate(
+            { user_id: userId },
+            { $inc: { balance: -config.cost } },
+            { new: true }
+        );
+
+        try {
+            const imageBase64 = req.file.buffer.toString('base64');
+
+            const geminiRes = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [
+                            { text: style.promptTemplate },
+                            { inline_data: { mime_type: req.file.mimetype, data: imageBase64 } }
+                        ]}]
+                    })
+                }
+            );
+            const geminiData = await geminiRes.json();
+            const resultPart = geminiData?.candidates?.[0]?.content?.parts?.find(p => p.inline_data);
+            if (!resultPart) throw new Error('No image returned from Gemini');
+
+            const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
+
+            await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
+
+            // fire-and-forget archive to your Telegram Storage Channel — doesn't block the response
+            bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
+                source: Buffer.from(resultPart.inline_data.data, 'base64')
+            }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
+
+            res.json({
+                success: true,
+                imageBase64: resultBase64,
+                cost: config.cost,
+                newBalance: updatedUser.balance,
+                usesRemaining: config.dailyCap - (usesToday + 1)
+            });
+
+        } catch (genErr) {
+            await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
+            await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
+            console.error('[Imagegen Generation Error]:', genErr.message);
+            res.status(500).json({ error: 'Generation failed — DASH refunded' });
+        }
+
+    } catch (err) {
+        console.error('Imagegen generate route error:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// ===== Admin: style presets =====
+
+router.get('/api/admin/shop/imagegen/styles', validateAdmin, async (req, res) => {
+    try {
+        const styles = await ImageStylePreset.find().sort({ order: 1 });
+        res.json({ success: true, styles });
+    } catch (err) {
+        console.error('Get admin imagegen styles error:', err);
+        res.status(500).json({ error: 'Failed to fetch styles' });
+    }
+});
+
+router.post('/api/admin/shop/imagegen/style/create', validateAdmin, async (req, res) => {
+    try {
+        const { styleId, name, promptTemplate, previewThumbnail, order } = req.body;
+        if (!styleId || !name || !promptTemplate) {
+            return res.status(400).json({ error: 'styleId, name, and promptTemplate required' });
+        }
+
+        const style = await ImageStylePreset.create({
+            styleId, name, promptTemplate, previewThumbnail: previewThumbnail || '', order: order || 0
+        });
+
+        await logAdminAction(req.adminUser, 'imagegen_create_style', `Created style: ${name}`);
+        res.json({ success: true, message: 'Style created', styleId: style.styleId });
+    } catch (err) {
+        console.error('Create imagegen style error:', err);
+        res.status(500).json({ error: 'Failed to create style' });
+    }
+});
+
+router.put('/api/admin/shop/imagegen/style/:styleId', validateAdmin, async (req, res) => {
+    try {
+        const style = await ImageStylePreset.findOneAndUpdate(
+            { styleId: req.params.styleId }, req.body, { new: true }
+        );
+        if (!style) return res.status(404).json({ error: 'Style not found' });
+
+        await logAdminAction(req.adminUser, 'imagegen_update_style', `Updated style: ${style.name}`);
+        res.json({ success: true, style });
+    } catch (err) {
+        console.error('Update imagegen style error:', err);
+        res.status(500).json({ error: 'Failed to update style' });
+    }
+});
+
+router.delete('/api/admin/shop/imagegen/style/:styleId', validateAdmin, async (req, res) => {
+    try {
+        const style = await ImageStylePreset.findOneAndDelete({ styleId: req.params.styleId });
+        if (!style) return res.status(404).json({ error: 'Style not found' });
+
+        await logAdminAction(req.adminUser, 'imagegen_delete_style', `Deleted style: ${style.name}`);
+        res.json({ success: true, message: 'Style deleted' });
+    } catch (err) {
+        console.error('Delete imagegen style error:', err);
+        res.status(500).json({ error: 'Failed to delete style' });
+    }
+});
+
+// ===== Admin: pricing/cap config =====
+
+router.get('/api/admin/shop/imagegen/config', validateAdmin, async (req, res) => {
+    try {
+        let config = await ImageGenConfig.findOne();
+        if (!config) config = await ImageGenConfig.create({});
+        res.json({ success: true, config });
+    } catch (err) {
+        console.error('Get imagegen admin config error:', err);
+        res.status(500).json({ error: 'Failed to fetch config' });
+    }
+});
+
+router.put('/api/admin/shop/imagegen/config', validateAdmin, async (req, res) => {
+    try {
+        const { cost, dailyCap } = req.body;
+        let config = await ImageGenConfig.findOne();
+        if (!config) config = new ImageGenConfig();
+        if (cost !== undefined) config.cost = Number(cost);
+        if (dailyCap !== undefined) config.dailyCap = Number(dailyCap);
+        config.updatedAt = new Date();
+        await config.save();
+
+        await logAdminAction(req.adminUser, 'imagegen_update_config', `Updated cost=${config.cost}, dailyCap=${config.dailyCap}`);
+        res.json({ success: true, config });
+    } catch (err) {
+        console.error('Update imagegen config error:', err);
+        res.status(500).json({ error: 'Failed to update config' });
     }
 });
 
