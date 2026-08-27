@@ -533,33 +533,53 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
         try {
             const imageBase64 = req.file.buffer.toString('base64');
 
-            const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            // Ensure you have added OPENROUTER_API_KEY to your process.env file
+const openRouterRes = await fetch(
+    "https://openrouter.ai",
     {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
+        },
         body: JSON.stringify({
-            contents: [{ parts: [
-                { text: style.promptTemplate },
-                { inline_data: { mime_type: req.file.mimetype, data: imageBase64 } }
-            ] }],
-            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+            // Uses a highly-rated, completely free open-source image model
+            model: 'stabilityai/stable-diffusion-xl', 
+            prompt: style.promptTemplate,
+            n: 1,
+            size: '1024x1024'
         })
     }
 );
 
-const geminiData = await geminiRes.json();
+const openRouterData = await openRouterRes.json();
 
-if (!geminiRes.ok || geminiData.error) {
-    console.error('[Imagegen Gemini API Error]', geminiRes.status, JSON.stringify(geminiData.error || geminiData));
-    throw new Error(geminiData.error?.message || `Gemini API returned ${geminiRes.status}`);
+if (!openRouterRes.ok || openRouterData.error) {
+    console.error('[Imagegen OpenRouter API Error]', openRouterRes.status, JSON.stringify(openRouterData.error || openRouterData));
+    throw new Error(openRouterData.error?.message || `OpenRouter API returned ${openRouterRes.status}`);
 }
 
-const resultPart = geminiData?.candidates?.[0]?.content?.parts?.find(p => p.inline_data);
-if (!resultPart) {
-    console.error('[Imagegen No Image Part]', JSON.stringify(geminiData));
-    throw new Error('No image returned from Gemini');
+// OpenRouter returns a temporary URL hosting your new image
+const imageUrl = openRouterData?.data?.[0]?.url;
+if (!imageUrl) {
+    console.error('[Imagegen No Image URL Found]', JSON.stringify(openRouterData));
+    throw new Error('No image URL returned from OpenRouter');
 }
+
+// Convert the hosted image URL back into base64 to match your existing app logic
+const imageFetch = await fetch(imageUrl);
+const arrayBuffer = await imageFetch.arrayBuffer();
+const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
+
+// Mimic your original resultPart structure so you don't have to break downstream code
+const resultPart = {
+    inline_data: {
+        mime_type: 'image/png',
+        data: imageBase64
+    }
+};
+
+console.log("Free image successfully generated and converted to Base64!");
 
             const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
 
