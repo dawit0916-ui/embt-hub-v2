@@ -534,21 +534,32 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             const imageBase64 = req.file.buffer.toString('base64');
 
             const geminiRes = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${process.env.GEMINI_API_KEY}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [
-                            { text: style.promptTemplate },
-                            { inline_data: { mime_type: req.file.mimetype, data: imageBase64 } }
-                        ]}]
-                    })
-                }
-            );
-            const geminiData = await geminiRes.json();
-            const resultPart = geminiData?.candidates?.[0]?.content?.parts?.find(p => p.inline_data);
-            if (!resultPart) throw new Error('No image returned from Gemini');
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            contents: [{ parts: [
+                { text: style.promptTemplate },
+                { inline_data: { mime_type: req.file.mimetype, data: imageBase64 } }
+            ] }],
+            generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+        })
+    }
+);
+
+const geminiData = await geminiRes.json();
+
+if (!geminiRes.ok || geminiData.error) {
+    console.error('[Imagegen Gemini API Error]', geminiRes.status, JSON.stringify(geminiData.error || geminiData));
+    throw new Error(geminiData.error?.message || `Gemini API returned ${geminiRes.status}`);
+}
+
+const resultPart = geminiData?.candidates?.[0]?.content?.parts?.find(p => p.inline_data);
+if (!resultPart) {
+    console.error('[Imagegen No Image Part]', JSON.stringify(geminiData));
+    throw new Error('No image returned from Gemini');
+}
 
             const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
 
