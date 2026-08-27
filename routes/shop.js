@@ -530,11 +530,9 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { new: true }
         );
 
-        try {
-                
-            // Ensure you have added OPENROUTER_API_KEY to your process.env file
+                try {
+            // 1. FIX: Point to OpenRouter's universal API endpoint
             const openRouterRes = await fetch(
-                // FIX 1: Provide the exact full image endpoint URL path
                 "https://openrouter.ai",
                 {
                     method: 'POST',
@@ -543,17 +541,20 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
                         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`
                     },
                     body: JSON.stringify({
-                        // A top-tier, completely free model option available on OpenRouter
+                        // Using a highly rated, completely free open-source image model on OpenRouter
                         model: 'stabilityai/stable-diffusion-xl', 
-                        prompt: style.promptTemplate,
-                        n: 1,
-                        size: '1024x1024',
-                        // FIX 2: Ask OpenRouter to send back direct Base64 instead of a URL string link
-                        response_format: 'b64_json' 
+                        // OpenRouter handles prompts via the messages array for this endpoint
+                        messages: [
+                            {
+                                role: "user",
+                                content: style.promptTemplate
+                            }
+                        ]
                     })
                 }
             );
 
+            // This will now parse correctly as JSON instead of HTML!
             const openRouterData = await openRouterRes.json();
 
             if (!openRouterRes.ok || openRouterData.error) {
@@ -561,33 +562,47 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
                 throw new Error(openRouterData.error?.message || `OpenRouter API returned ${openRouterRes.status}`);
             }
 
-            // Extract the generated Base64 string from OpenRouter's internal array layout
-            const resultPart = openRouterData?.data?.[0];
-            if (!resultPart || !resultPart.b64_json) {
-                console.error('[Imagegen No Image Data Found]', JSON.stringify(openRouterData));
-                throw new Error('No base64 image data returned from OpenRouter');
+            // 2. FIX: Extract the text containing the URL or markdown image link from the chat assistant
+            const assistantResponse = openRouterData?.choices?.[0]?.message?.content;
+            if (!assistantResponse) {
+                console.error('[Imagegen No Content Found]', JSON.stringify(openRouterData));
+                throw new Error('No image markdown or content returned from OpenRouter');
             }
 
-            const imageBase64 = resultPart.b64_json;
+            // Regular expression to extract the URL inside markdown like ![image](url) or a raw URL
+            const urlRegex = /(https?:\/\/[^\s\)]+)/;
+            const match = assistantResponse.match(urlRegex);
+            const imageUrl = match ? match[0] : null;
 
-            // Reconstruct the payload format structure to perfectly match your original downstream logic variables
-            const resultPartFormatted = {
+            if (!imageUrl) {
+                console.error('[Imagegen No Image URL Found in Response]', assistantResponse);
+                throw new Error('Could not find image URL in OpenRouter response');
+            }
+
+            // 3. Convert the hosted image URL back into base64 to match your existing app logic
+            const imageFetch = await fetch(imageUrl);
+            if (!imageFetch.ok) throw new Error(`Failed to download image from provider asset server: ${imageFetch.status}`);
+            
+            const arrayBuffer = await imageFetch.arrayBuffer();
+            const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
+
+            // Reconstruct the structural object variables so your downstream Telegram and client code remains untouched
+            const resultPart = {
                 inline_data: {
                     mime_type: 'image/png',
                     data: imageBase64
                 }
             };
 
-            console.log("Free image successfully generated via OpenRouter payload!");
+            console.log("Free image successfully generated and converted to Base64 via chat routing!");
 
-            // Uses your exact existing conversion template
-            const resultBase64 = `data:${resultPartFormatted.inline_data.mime_type};base64,${resultPartFormatted.inline_data.data}`;
+            const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
             // Fire-and-forget archive to your Telegram Storage Channel
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
-                source: Buffer.from(resultPartFormatted.inline_data.data, 'base64')
+                source: Buffer.from(resultPart.inline_data.data, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
 
             res.json({
