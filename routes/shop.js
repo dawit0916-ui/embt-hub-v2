@@ -530,16 +530,21 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-                                try {
+                                        try {
             // 1. Convert user's uploaded photo to Base64 format
             const userImageBase64 = req.file.buffer.toString('base64');
             const mimeType = req.file.mimetype;
 
             console.log("👁️ Step 1: Asking Google AI Studio to analyze the uploaded image structure...");
 
+            // CRITICAL FIXED TARGET URL STRING: Builds with strict addition to prevent layout bugs
+            const targetGeminiUrl = "https://googleapis.com" + process.env.GEMINI_API_KEY.trim();
+            
+            console.log("📡 Connecting directly to Google API pipeline...");
+
             // Use your native GEMINI_API_KEY to read and break down the image for free
             const geminiVisionRes = await axios.post(
-                `https://googleapis.com{process.env.GEMINI_API_KEY}`,
+                targetGeminiUrl,
                 {
                     contents: [{
                         parts: [
@@ -562,13 +567,13 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             console.log("📝 Step 2: Image analyzed successfully by Gemini. Combining with preset style templates...");
 
             // Combine your style text with Gemini's visual breakdown description
-            const finalPromptText = `${style.promptTemplate}. The subject is: ${imageDescription}`;
+            const finalPromptText = style.promptTemplate + ". The subject is: " + imageDescription;
             const encodedPrompt = encodeURIComponent(finalPromptText);
 
             // EXACT CORRECT POLLINATIONS URL STRUCTURE 
             const targetUrl = "https://pollinations.ai" + encodedPrompt + "?model=flux&width=1024&height=1024";
             
-            console.log(`🚀 Step 3: Compiling final sketch asset via Axios...`);
+            console.log("🚀 Step 3: Compiling final sketch asset via Axios...");
 
             // Fetch the final generated image buffer from Pollinations
             const mediaResponse = await axios.get(targetUrl, {
