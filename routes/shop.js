@@ -530,59 +530,47 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-                        try {
+                                try {
             // 1. Convert user's uploaded photo to Base64 format
             const userImageBase64 = req.file.buffer.toString('base64');
             const mimeType = req.file.mimetype;
 
-            console.log("👁️ Step 1: Asking OpenRouter to analyze the uploaded image structure...");
+            console.log("👁️ Step 1: Asking Google AI Studio to analyze the uploaded image structure...");
 
-            // Use OpenRouter's completely FREE Gemini 2.5 Flash endpoint to process the image
-            const openRouterVisionRes = await axios.post(
-                "https://openrouter.ai",
+            // Use your native GEMINI_API_KEY to read and break down the image for free
+            const geminiVisionRes = await axios.post(
+                `https://googleapis.com{process.env.GEMINI_API_KEY}`,
                 {
-                    model: "google/gemini-2.5-flash:free",
-                    messages: [
-                        {
-                            role: "user",
-                            content: [
-                                {
-                                    type: "text",
-                                    text: "Describe the person, pose, clothing, and layout in this image in extreme detail for an AI image generator prompt. Do not mention it is an edit, just describe the scene."
-                                },
-                                {
-                                    type: "image_url",
-                                    image_url: {
-                                        url: `data:${mimeType};base64,${userImageBase64}`
-                                    }
-                                }
-                            ]
-                        }
-                    ]
+                    contents: [{
+                        parts: [
+                            { text: "Describe the person, pose, clothing, and layout in this image in extreme detail for an AI image generator prompt. Do not mention it is an edit, just describe the scene." },
+                            { inline_data: { mime_type: mimeType, data: userImageBase64 } }
+                        ]
+                    }]
                 },
-                {
-                    headers: { 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY.trim()}` }
-                }
+                { headers: { 'Content-Type': 'application/json' } }
             );
 
-            const imageDescription = openRouterVisionRes.data?.choices?.[0]?.message?.content;
+            // Extract the generated description text from the native Gemini response structure
+            const imageDescription = geminiVisionRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            
             if (!imageDescription) {
-                throw new Error("OpenRouter vision model failed to describe the image.");
+                console.error('[Gemini Vision Failed]', JSON.stringify(geminiVisionRes.data));
+                throw new Error("Google AI Studio vision model failed to describe the image.");
             }
 
-            console.log("📝 Step 2: Image analyzed successfully. Combining with preset style templates...");
+            console.log("📝 Step 2: Image analyzed successfully by Gemini. Combining with preset style templates...");
 
-            // Combine the image description with your sketch preset instructions
+            // Combine your style text with Gemini's visual breakdown description
             const finalPromptText = `${style.promptTemplate}. The subject is: ${imageDescription}`;
             const encodedPrompt = encodeURIComponent(finalPromptText);
 
-            // EXACT CORRECT POLLINATIONS URL STRUCTURE (Fixed Subdomain and Paths)
+            // EXACT CORRECT POLLINATIONS URL STRUCTURE 
             const targetUrl = "https://pollinations.ai" + encodedPrompt + "?model=flux&width=1024&height=1024";
             
             console.log(`🚀 Step 3: Compiling final sketch asset via Axios...`);
-            console.log(`📡 Target Route: ${targetUrl.substring(0, 100)}...`);
 
-            // Fetch the final generated image buffer
+            // Fetch the final generated image buffer from Pollinations
             const mediaResponse = await axios.get(targetUrl, {
                 responseType: 'arraybuffer',
                 headers: {
@@ -591,7 +579,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
                 timeout: 45000 
             });
 
-            // Convert generated binary buffer back to base64
+            // Convert generated binary buffer back to a clean Base64 string
             const resultImageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
 
             const resultPart = {
@@ -607,7 +595,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
-            // Send to Telegram Archive
+            // Send to your Telegram Archive Channel
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
                 source: Buffer.from(resultPart.inline_data.data, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
@@ -626,6 +614,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
             res.status(500).json({ error: 'Generation failed — DASH refunded' });
         }
+
             
     } catch (err) {
         console.error('Imagegen generate route error:', err);
