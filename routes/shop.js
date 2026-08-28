@@ -523,36 +523,28 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
         if (user.balance < config.cost) {
             return res.status(400).json({ error: `Insufficient DASH. You need ${config.cost} but have ${user.balance}` });
         }
-
-        // Deduct up front, refund on failure — matches purchase-course pattern
-        const updatedUser = await User.findOneAndUpdate(
-            { user_id: userId },
-            { $inc: { balance: -config.cost } },
-            { new: true }
-        );
-                                                try {
+        try {
             // 1. Convert user's uploaded photo to Base64 format
             const userImageBase64 = req.file.buffer.toString('base64');
             const mimeType = req.file.mimetype;
 
             console.log("👁️ Step 1: Asking Google AI Studio to analyze the uploaded image structure...");
 
-            // Sanitize the API key string block directly from environment memory
+            // Sanitize the API key string token cleanly from environment memory
             const cleanApiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : '';
 
             if (!cleanApiKey) {
                 throw new Error("CRITICAL: GEMINI_API_KEY environment variable is completely missing or empty.");
             }
 
-            // EXACT CORRECT REWRITE: Using the URL engine guarantees that slashes and keys are partitioned flawlessly
-            const targetGeminiUrlObj = new URL("https://googleapis.com");
-            targetGeminiUrlObj.searchParams.set('key', cleanApiKey);
+            // FIXED STRING BLOCK: Forcing direct manual concatenation prevents the environment from dropping url paths
+            const targetGeminiUrl = "https://googleapis.com" + cleanApiKey;
             
-            console.log("📡 Connecting directly to Google API pipeline at host:", targetGeminiUrlObj.host);
+            console.log("📡 Connecting directly to Google API pipeline...");
 
             // Use your native GEMINI_API_KEY to read and break down the image for free
             const geminiVisionRes = await axios.post(
-                targetGeminiUrlObj.toString(),
+                targetGeminiUrl,
                 {
                     contents: [{
                         parts: [
