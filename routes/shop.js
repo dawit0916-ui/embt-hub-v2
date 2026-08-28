@@ -530,17 +530,17 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-        try {
-            // 1. Properly encode the text prompt template
+                try {
+            // Encode the text template cleanly
             const cleanPrompt = encodeURIComponent(style.promptTemplate);
             
-            // 2. Verified structural URL string block utilizing backticks
-            const targetUrl = `https://pollinations.ai{cleanPrompt}?model=flux&width=1024&height=1024`;
+            // EXACT FIXED URL STRING:
+            const targetUrl = "https://pollinations.ai" + cleanPrompt + "?model=flux&width=1024&height=1024";
             
             console.log("🚀 Initializing fallback asset compile sequence via Axios stream...");
-            console.log(`📡 Hitting Destination URL: ${targetUrl}`); // Let's inspect the target output explicitly
+            console.log(`📡 Hitting Destination URL: ${targetUrl}`); 
 
-            // 3. Fire the request over the stable Axios layer
+            // Execute the request over Axios
             const mediaResponse = await axios.get(targetUrl, {
                 responseType: 'arraybuffer',
                 headers: {
@@ -549,7 +549,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
                 timeout: 30000 
             });
 
-            // 4. Convert the binary stream buffer array straight to a clean base64 string
+            // Convert raw binary chunks straight to base64
             const imageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
 
             const resultPart = {
@@ -579,6 +579,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
+
             // If axios hits an error, print the detailed reason instead of a generic "fetch failed"
             console.error('[Imagegen Generation Failure detail]:', genErr.response?.status || genErr.message);
             
