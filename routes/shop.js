@@ -530,42 +530,84 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-                try {
-            // Encode the text template cleanly
-            const cleanPrompt = encodeURIComponent(style.promptTemplate);
-            
-            // EXACT FIXED URL STRING:
-            const targetUrl = "https://pollinations.ai" + cleanPrompt + "?model=flux&width=1024&height=1024";
-            
-            console.log("🚀 Initializing fallback asset compile sequence via Axios stream...");
-            console.log(`📡 Hitting Destination URL: ${targetUrl}`); 
+                        try {
+            // 1. Convert user's uploaded photo to Base64 format
+            const userImageBase64 = req.file.buffer.toString('base64');
+            const mimeType = req.file.mimetype;
 
-            // Execute the request over Axios
+            console.log("👁️ Step 1: Asking OpenRouter to analyze the uploaded image structure...");
+
+            // Use OpenRouter's completely FREE Gemini 2.5 Flash endpoint to process the image
+            const openRouterVisionRes = await axios.post(
+                "https://openrouter.ai",
+                {
+                    model: "google/gemini-2.5-flash:free",
+                    messages: [
+                        {
+                            role: "user",
+                            content: [
+                                {
+                                    type: "text",
+                                    text: "Describe the person, pose, clothing, and layout in this image in extreme detail for an AI image generator prompt. Do not mention it is an edit, just describe the scene."
+                                },
+                                {
+                                    type: "image_url",
+                                    image_url: {
+                                        url: `data:${mimeType};base64,${userImageBase64}`
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    headers: { 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY.trim()}` }
+                }
+            );
+
+            const imageDescription = openRouterVisionRes.data?.choices?.[0]?.message?.content;
+            if (!imageDescription) {
+                throw new Error("OpenRouter vision model failed to describe the image.");
+            }
+
+            console.log("📝 Step 2: Image analyzed successfully. Combining with preset style templates...");
+
+            // Combine the image description with your sketch preset instructions
+            const finalPromptText = `${style.promptTemplate}. The subject is: ${imageDescription}`;
+            const encodedPrompt = encodeURIComponent(finalPromptText);
+
+            // EXACT CORRECT POLLINATIONS URL STRUCTURE (Fixed Subdomain and Paths)
+            const targetUrl = "https://pollinations.ai" + encodedPrompt + "?model=flux&width=1024&height=1024";
+            
+            console.log(`🚀 Step 3: Compiling final sketch asset via Axios...`);
+            console.log(`📡 Target Route: ${targetUrl.substring(0, 100)}...`);
+
+            // Fetch the final generated image buffer
             const mediaResponse = await axios.get(targetUrl, {
                 responseType: 'arraybuffer',
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
-                timeout: 30000 
+                timeout: 45000 
             });
 
-            // Convert raw binary chunks straight to base64
-            const imageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
+            // Convert generated binary buffer back to base64
+            const resultImageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
 
             const resultPart = {
                 inline_data: {
                     mime_type: 'image/png',
-                    data: imageBase64
+                    data: resultImageBase64
                 }
             };
 
-            console.log("🎯 Binary asset successfully compiled to Base64!");
+            console.log("🎯 Success! Image successfully restyled and compiled!");
 
             const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
-            // Send photo buffer securely to your destination Telegram log channel
+            // Send to Telegram Archive
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
                 source: Buffer.from(resultPart.inline_data.data, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
@@ -579,14 +621,12 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
-
-            // If axios hits an error, print the detailed reason instead of a generic "fetch failed"
-            console.error('[Imagegen Generation Failure detail]:', genErr.response?.status || genErr.message);
-            
+            console.error('[Imagegen Generation Failure detail]:', genErr.response?.data || genErr.message);
             await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
             res.status(500).json({ error: 'Generation failed — DASH refunded' });
-                         }            
+        }
+            
     } catch (err) {
         console.error('Imagegen generate route error:', err);
         res.status(500).json({ error: 'Server error' });
