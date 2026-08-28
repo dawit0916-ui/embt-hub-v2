@@ -530,21 +530,29 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-                                        try {
+                                                try {
             // 1. Convert user's uploaded photo to Base64 format
             const userImageBase64 = req.file.buffer.toString('base64');
             const mimeType = req.file.mimetype;
 
             console.log("👁️ Step 1: Asking Google AI Studio to analyze the uploaded image structure...");
 
-            // CRITICAL FIXED TARGET URL STRING: Builds with strict addition to prevent layout bugs
-            const targetGeminiUrl = "https://googleapis.com" + process.env.GEMINI_API_KEY.trim();
+            // Sanitize the API key string block directly from environment memory
+            const cleanApiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : '';
+
+            if (!cleanApiKey) {
+                throw new Error("CRITICAL: GEMINI_API_KEY environment variable is completely missing or empty.");
+            }
+
+            // EXACT CORRECT REWRITE: Using the URL engine guarantees that slashes and keys are partitioned flawlessly
+            const targetGeminiUrlObj = new URL("https://googleapis.com");
+            targetGeminiUrlObj.searchParams.set('key', cleanApiKey);
             
-            console.log("📡 Connecting directly to Google API pipeline...");
+            console.log("📡 Connecting directly to Google API pipeline at host:", targetGeminiUrlObj.host);
 
             // Use your native GEMINI_API_KEY to read and break down the image for free
             const geminiVisionRes = await axios.post(
-                targetGeminiUrl,
+                targetGeminiUrlObj.toString(),
                 {
                     contents: [{
                         parts: [
