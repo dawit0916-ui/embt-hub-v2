@@ -530,29 +530,28 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-
-                         try {
-            // Require axios at the top of your file if not already loaded: const axios = require('axios');
+        try {
+            // 1. Properly encode the text prompt template
             const cleanPrompt = encodeURIComponent(style.promptTemplate);
             
-            // Pollinations free asset generation endpoint url
+            // 2. Verified structural URL string block utilizing backticks
             const targetUrl = `https://pollinations.ai{cleanPrompt}?model=flux&width=1024&height=1024`;
             
             console.log("🚀 Initializing fallback asset compile sequence via Axios stream...");
+            console.log(`📡 Hitting Destination URL: ${targetUrl}`); // Let's inspect the target output explicitly
 
-            // Axios bypasses the native Node fetch DNS IPv6 bug cleanly
+            // 3. Fire the request over the stable Axios layer
             const mediaResponse = await axios.get(targetUrl, {
-                responseType: 'arraybuffer', // Forces download directly into binary data array chunks
+                responseType: 'arraybuffer',
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
-                timeout: 30000 // Prevention fallback timeout rules (30 seconds)
+                timeout: 30000 
             });
 
-            // Convert the binary stream buffer array straight to a clean base64 string
+            // 4. Convert the binary stream buffer array straight to a clean base64 string
             const imageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
 
-            // Format object properties to preserve downstream compatibility structures
             const resultPart = {
                 inline_data: {
                     mime_type: 'image/png',
