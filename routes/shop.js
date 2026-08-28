@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const multer = require('multer'); // new dependency — npm install multer
 const router = express.Router();
 
@@ -530,32 +531,28 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { new: true }
         );
 
-                 try {
-            // 1. Force the target to process through the explicit destination string
+                         try {
+            // Require axios at the top of your file if not already loaded: const axios = require('axios');
             const cleanPrompt = encodeURIComponent(style.promptTemplate);
+            
+            // Pollinations free asset generation endpoint url
             const targetUrl = `https://pollinations.ai{cleanPrompt}?model=flux&width=1024&height=1024`;
             
-            console.log("🚀 Initializing image compile sequence via explicit routing...");
-            
-            const mediaRes = await fetch(targetUrl, {
-                method: 'GET',
+            console.log("🚀 Initializing fallback asset compile sequence via Axios stream...");
+
+            // Axios bypasses the native Node fetch DNS IPv6 bug cleanly
+            const mediaResponse = await axios.get(targetUrl, {
+                responseType: 'arraybuffer', // Forces download directly into binary data array chunks
                 headers: {
-                    // Spoof user-agent to bypass strict server firewalls preventing raw terminal scrapers
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Accept': 'image/png,image/*;q=0.8'
-                }
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 30000 // Prevention fallback timeout rules (30 seconds)
             });
 
-            if (!mediaRes.ok) {
-                console.error('[Imagegen Free API Error]', mediaRes.status);
-                throw new Error(`Media pipeline returned error status code: ${mediaRes.status}`);
-            }
+            // Convert the binary stream buffer array straight to a clean base64 string
+            const imageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
 
-            // 2. Download the binary chunk buffer securely from the server stream
-            const arrayBuffer = await mediaRes.arrayBuffer();
-            const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
-
-            // Format properties perfectly to keep downstream dependencies happy
+            // Format object properties to preserve downstream compatibility structures
             const resultPart = {
                 inline_data: {
                     mime_type: 'image/png',
@@ -569,7 +566,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
-            // Send photo buffer to Telegram storage channel
+            // Send photo buffer securely to your destination Telegram log channel
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
                 source: Buffer.from(resultPart.inline_data.data, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
@@ -583,12 +580,13 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
+            // If axios hits an error, print the detailed reason instead of a generic "fetch failed"
+            console.error('[Imagegen Generation Failure detail]:', genErr.response?.status || genErr.message);
+            
             await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
-            console.error('[Imagegen Generation Error]:', genErr.message);
             res.status(500).json({ error: 'Generation failed — DASH refunded' });
-        }
-
+                         }            
     } catch (err) {
         console.error('Imagegen generate route error:', err);
         res.status(500).json({ error: 'Server error' });
