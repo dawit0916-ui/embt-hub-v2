@@ -536,7 +536,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             // 1. Build the explicit URL destination string
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
             const modelId = "pruna/p-image-edit";
-            const targetUrl = "https://cloudflare.com/" + accountId + "/ai/run/" + modelId;
+            const targetUrl = "https://api.cloudflare.com/client/v4/accounts/" + accountId + "/ai/run/" + modelId;
 
             // 2. Format the user's uploaded photo into a standard Base64 Data URI string matching Cloudflare's schema
             const userImageBase64 = req.file.buffer.toString('base64');
