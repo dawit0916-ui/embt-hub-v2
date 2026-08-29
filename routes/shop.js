@@ -521,6 +521,15 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             return res.status(429).json({ error: 'Daily generation limit reached' });
         }
         if (user.balance < config.cost) {
+            return res.status(400).json({ error: `Insufficient DASH. You need ${config.cost} but have ${user.balance}` });
+        }
+
+        // Deduct up front, refund on failure
+        const updatedUser = await User.findOneAndUpdate(
+            { user_id: userId },
+            { $inc: { balance: -config.cost } },
+            { new: true }
+        );
         try {
             console.log("🚀 Initializing Cloudflare Workers AI Pruna img2img pipeline...");
 
