@@ -523,41 +523,38 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
         if (user.balance < config.cost) {
             return res.status(400).json({ error: `Insufficient DASH. You need ${config.cost} but have ${user.balance}` });
         }
-        try {
-            // Ensure you have loaded FormData at the top of your file: const FormData = require('form-data');
+            try {
             console.log("🚀 Initializing Cloudflare Workers AI img2img pipeline...");
 
-            // Target the stable image-to-image distribution endpoint
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
             const modelId = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
             const targetUrl = "https://cloudflare.com" + accountId + "/ai/run/" + modelId;
 
-            // 1. Pack variables inside a Form boundary
+            // 1. Convert the raw Multer Buffer into a standard Blob for modern Node compatibility
+            const imageBlob = new Blob([req.file.buffer], { type: req.file.mimetype });
+
+            // 2. Build the native web-standard FormData structure
             const form = new FormData();
             
-            // Append the raw reference image buffer directly from Multer memory
-            form.append('image', req.file.buffer, {
-                filename: 'source.png',
-                contentType: req.file.mimetype
-            });
-            
+            // Pass the web-standard Blob along with a explicit file layout tag name string
+            form.append('image', imageBlob, 'source.png');
             form.append('prompt', style.promptTemplate);
-            form.append('strength', '0.65'); // 0.1 keeps original exactly, 0.9 re-draws almost completely
+            form.append('strength', '0.65'); 
             form.append('num_steps', '20');
 
-            console.log("📡 Shipping media boundary payload to Cloudflare...");
+            console.log("📡 Shipping modern binary blob payload to Cloudflare...");
 
-            // 2. Execute over Axios utilizing native boundary headers
+            // 3. Execute over Axios securely
             const cfResponse = await axios.post(targetUrl, form, {
                 headers: {
-                    ...form.getHeaders(),
+                    // Modern global FormData handles its own internal headers/boundaries automatically
                     'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
                 },
-                responseType: 'arraybuffer', // Instructs network client to intercept the response binary stream
+                responseType: 'arraybuffer', 
                 timeout: 45000
             });
 
-            // 3. Convert generated binary stream straight to a clean base64 string
+            // 4. Convert generated binary stream straight to a clean base64 string
             const resultImageBase64 = Buffer.from(cfResponse.data, 'binary').toString('base64');
 
             const resultPart = {
