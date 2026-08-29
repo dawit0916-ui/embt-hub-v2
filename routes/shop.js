@@ -524,68 +524,41 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             return res.status(400).json({ error: `Insufficient DASH. You need ${config.cost} but have ${user.balance}` });
         }
         try {
-            // 1. Convert user's uploaded photo to Base64 format
-            const userImageBase64 = req.file.buffer.toString('base64');
-            const mimeType = req.file.mimetype;
+            // Ensure you have loaded FormData at the top of your file: const FormData = require('form-data');
+            console.log("🚀 Initializing Cloudflare Workers AI img2img pipeline...");
 
-            console.log("👁️ Step 1: Asking Google AI Studio to analyze the uploaded image structure...");
+            // Target the stable image-to-image distribution endpoint
+            const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
+            const modelId = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
+            const targetUrl = "https://cloudflare.com" + accountId + "/ai/run/" + modelId;
 
-            // Sanitize the API key string token cleanly from environment memory
-            const cleanApiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : '';
-
-            if (!cleanApiKey) {
-                throw new Error("CRITICAL: GEMINI_API_KEY environment variable is completely missing or empty.");
-            }
-
-            // FIXED STRING BLOCK: Forcing direct manual concatenation prevents the environment from dropping url paths
-            const targetGeminiUrl = "https://googleapis.com" + cleanApiKey;
+            // 1. Pack variables inside a Form boundary
+            const form = new FormData();
             
-            console.log("📡 Connecting directly to Google API pipeline...");
-
-            // Use your native GEMINI_API_KEY to read and break down the image for free
-            const geminiVisionRes = await axios.post(
-                targetGeminiUrl,
-                {
-                    contents: [{
-                        parts: [
-                            { text: "Describe the person, pose, clothing, and layout in this image in extreme detail for an AI image generator prompt. Do not mention it is an edit, just describe the scene." },
-                            { inline_data: { mime_type: mimeType, data: userImageBase64 } }
-                        ]
-                    }]
-                },
-                { headers: { 'Content-Type': 'application/json' } }
-            );
-
-            // Extract the generated description text from the native Gemini response structure
-            const imageDescription = geminiVisionRes.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            // Append the raw reference image buffer directly from Multer memory
+            form.append('image', req.file.buffer, {
+                filename: 'source.png',
+                contentType: req.file.mimetype
+            });
             
-            if (!imageDescription) {
-                console.error('[Gemini Vision Failed]', JSON.stringify(geminiVisionRes.data));
-                throw new Error("Google AI Studio vision model failed to describe the image.");
-            }
+            form.append('prompt', style.promptTemplate);
+            form.append('strength', '0.65'); // 0.1 keeps original exactly, 0.9 re-draws almost completely
+            form.append('num_steps', '20');
 
-            console.log("📝 Step 2: Image analyzed successfully by Gemini. Combining with preset style templates...");
+            console.log("📡 Shipping media boundary payload to Cloudflare...");
 
-            // Combine your style text with Gemini's visual breakdown description
-            const finalPromptText = style.promptTemplate + ". The subject is: " + imageDescription;
-            const encodedPrompt = encodeURIComponent(finalPromptText);
-
-            // EXACT CORRECT POLLINATIONS URL STRUCTURE 
-            const targetUrl = "https://pollinations.ai" + encodedPrompt + "?model=flux&width=1024&height=1024";
-            
-            console.log("🚀 Step 3: Compiling final sketch asset via Axios...");
-
-            // Fetch the final generated image buffer from Pollinations
-            const mediaResponse = await axios.get(targetUrl, {
-                responseType: 'arraybuffer',
+            // 2. Execute over Axios utilizing native boundary headers
+            const cfResponse = await axios.post(targetUrl, form, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    ...form.getHeaders(),
+                    'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
                 },
-                timeout: 45000 
+                responseType: 'arraybuffer', // Instructs network client to intercept the response binary stream
+                timeout: 45000
             });
 
-            // Convert generated binary buffer back to a clean Base64 string
-            const resultImageBase64 = Buffer.from(mediaResponse.data, 'binary').toString('base64');
+            // 3. Convert generated binary stream straight to a clean base64 string
+            const resultImageBase64 = Buffer.from(cfResponse.data, 'binary').toString('base64');
 
             const resultPart = {
                 inline_data: {
@@ -594,13 +567,13 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
                 }
             };
 
-            console.log("🎯 Success! Image successfully restyled and compiled!");
+            console.log("🎯 Success! Cloudflare completed img2img compilation flawlessly!");
 
             const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
-            // Send to your Telegram Archive Channel
+            // Send photo buffer securely to your destination Telegram log channel
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
                 source: Buffer.from(resultPart.inline_data.data, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
@@ -614,13 +587,15 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
-            console.error('[Imagegen Generation Failure detail]:', genErr.response?.data || genErr.message);
+            // Log deep diagnostic information down to the server dashboard console window
+            const errString = genErr.response?.data ? Buffer.from(genErr.response.data).toString() : genErr.message;
+            console.error('[Imagegen Cloudflare Generation Error detail]:', errString);
+            
             await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
             res.status(500).json({ error: 'Generation failed — DASH refunded' });
         }
-
-            
+          
     } catch (err) {
         console.error('Imagegen generate route error:', err);
         res.status(500).json({ error: 'Server error' });
