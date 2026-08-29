@@ -521,40 +521,39 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             return res.status(429).json({ error: 'Daily generation limit reached' });
         }
         if (user.balance < config.cost) {
-            return res.status(400).json({ error: `Insufficient DASH. You need ${config.cost} but have ${user.balance}` });
-        }
-            try {
+                  try {
             console.log("🚀 Initializing Cloudflare Workers AI img2img pipeline...");
 
+            // 1. Explicitly unpack variables to prevent variable merging exceptions
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
             const modelId = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
-            const targetUrl = "https://cloudflare.com/" + accountId + "/ai/run/" + modelId;
+            const targetUrl = "https://cloudflare.com" + accountId + "/ai/run/" + modelId;
 
-            // 1. Convert the raw Multer Buffer into a standard Blob for modern Node compatibility
-            const imageBlob = new Blob([req.file.buffer], { type: req.file.mimetype });
+            // 2. Map the Multer Buffer memory directly into an unsigned 8-bit integer array stream
+            const imageByteArray = Array.from(new Uint8Array(req.file.buffer));
 
-            // 2. Build the native web-standard FormData structure
-            const form = new FormData();
-            
-            // Pass the web-standard Blob along with a explicit file layout tag name string
-            form.append('image', imageBlob, 'source.png');
-            form.append('prompt', style.promptTemplate);
-            form.append('strength', '0.65'); 
-            form.append('num_steps', '20');
+            console.log("📡 Shipping structured byte array payload over native JSON connection...");
 
-            console.log("📡 Shipping modern binary blob payload to Cloudflare...");
-
-            // 3. Execute over Axios securely
-            const cfResponse = await axios.post(targetUrl, form, {
-                headers: {
-                    // Modern global FormData handles its own internal headers/boundaries automatically
-                    'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
+            // 3. Fire request using clean application/json properties instead of forms
+            const cfResponse = await axios.post(
+                targetUrl, 
+                {
+                    prompt: style.promptTemplate,
+                    image: imageByteArray, // Pass binary array layout elements directly
+                    strength: 0.65,        // 0.1 holds source composition, 0.9 reconstructs completely
+                    num_steps: 20
                 },
-                responseType: 'arraybuffer', 
-                timeout: 45000
-            });
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
+                    },
+                    responseType: 'arraybuffer', // Tells Axios to intercept the output response stream as binary
+                    timeout: 45000
+                }
+            );
 
-            // 4. Convert generated binary stream straight to a clean base64 string
+            // 4. Convert generated binary response stream straight to a clean base64 string
             const resultImageBase64 = Buffer.from(cfResponse.data, 'binary').toString('base64');
 
             const resultPart = {
@@ -584,14 +583,22 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
-            // Log deep diagnostic information down to the server dashboard console window
-            const errString = genErr.response?.data ? Buffer.from(genErr.response.data).toString() : genErr.message;
+            // Safe fallback extraction block to check for detailed API failure metrics
+            let errString = genErr.message;
+            if (genErr.response?.data) {
+                try {
+                    errString = Buffer.from(genErr.response.data).toString();
+                } catch (e) {
+                    errString = "Binary parse exception across network error layer.";
+                }
+            }
+            
             console.error('[Imagegen Cloudflare Generation Error detail]:', errString);
             
             await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
             res.status(500).json({ error: 'Generation failed — DASH refunded' });
-        }
+                  }
           
     } catch (err) {
         console.error('Imagegen generate route error:', err);
