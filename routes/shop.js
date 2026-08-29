@@ -530,39 +530,43 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { $inc: { balance: -config.cost } },
             { new: true }
         );
-        try {
+                try {
             console.log("🚀 Initializing Cloudflare Workers AI Pruna img2img pipeline...");
 
-            // 1. Build the explicit URL destination string
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
-            const modelId = "pruna/p-image-edit";
-            const targetUrl = "https://api.cloudflare.com/client/v4/accounts/" + accountId + "/ai/run-v2/" + modelId;
+            
+            // 1. FIXED URL: The slash goes BEFORE the plus sign, and points to the base run endpoint
+            const targetUrl = "https://api.cloudflare.com/client/v4/accounts/" + accountId + "/ai/run";
 
             // 2. Format the user's uploaded photo into a standard Base64 Data URI string matching Cloudflare's schema
             const userImageBase64 = req.file.buffer.toString('base64');
             const imageDataUri = "data:" + req.file.mimetype + ";base64," + userImageBase64;
 
-            console.log("📡 Shipping base64 Data URI payload to Pruna AI...");
+            console.log("📡 Shipping base64 Data URI payload to Pruna AI via endpoint: " + targetUrl);
 
-            // 3. Fire the request over Axios with strict JSON structural mapping
+            // 3. Fire the request over Axios matching the Cloudflare REST API example structure exactly
             const cfResponse = await axios.post(
                 targetUrl, 
                 {
-                    prompt: style.promptTemplate,
-                    images: [imageDataUri], // Matches the string[] schema from the screenshot
-                    aspect_ratio: "1:1",
-                    turbo: true
+                    // CRITICAL SCHEMA ALIGNMENT: Pass the model name and input parameters inside the JSON body
+                    model: "pruna/p-image-edit",
+                    input: {
+                        prompt: style.promptTemplate,
+                        images: [imageDataUri], 
+                        aspect_ratio: "1:1",
+                        turbo: true
+                    }
                 },
                 {
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
                     },
-                    timeout: 60000 // Grant it up to 60 seconds to process complex compositions
+                    timeout: 60000 
                 }
             );
 
-            // 4. Extract the resulting image output url or base64 based on your dashboard output specs
+            // 4. Extract the resulting image output based on your dashboard output specs
             const outputAsset = cfResponse.data?.result?.image || cfResponse.data?.image;
             
             if (!outputAsset) {
@@ -574,13 +578,11 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             let resultBase64 = "";
 
             if (outputAsset.startsWith("http")) {
-                // If Cloudflare returns a presigned asset URL link, download it and convert to base64
                 console.log("🔗 Downloading completed asset from presigned link...");
                 const downloadRes = await axios.get(outputAsset, { responseType: 'arraybuffer' });
                 finalBase64String = Buffer.from(downloadRes.data, 'binary').toString('base64');
                 resultBase64 = "data:image/png;base64," + finalBase64String;
             } else {
-                // If Cloudflare returns a direct base64 Data URI string
                 resultBase64 = outputAsset;
                 finalBase64String = outputAsset.replace(/^data:image\/[a-z]+;base64,/, "");
             }
@@ -603,6 +605,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
+
             let errString = genErr.message;
             if (genErr.response?.data) {
                 errString = typeof genErr.response.data === 'object' 
