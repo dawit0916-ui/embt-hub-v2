@@ -528,7 +528,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
 
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
             const modelId = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
-            const targetUrl = "https://cloudflare.com" + accountId + "/ai/run/" + modelId;
+            const targetUrl = "https://cloudflare.com/" + accountId + "/ai/run/" + modelId;
 
             // 1. Convert the raw Multer Buffer into a standard Blob for modern Node compatibility
             const imageBlob = new Blob([req.file.buffer], { type: req.file.mimetype });
