@@ -521,57 +521,68 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             return res.status(429).json({ error: 'Daily generation limit reached' });
         }
         if (user.balance < config.cost) {
-                  try {
-            console.log("🚀 Initializing Cloudflare Workers AI img2img pipeline...");
+        try {
+            console.log("🚀 Initializing Cloudflare Workers AI Pruna img2img pipeline...");
 
-            // 1. Explicitly unpack variables to prevent variable merging exceptions
+            // 1. Build the explicit URL destination string
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
-            const modelId = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
+            const modelId = "pruna/p-image-edit";
             const targetUrl = "https://cloudflare.com" + accountId + "/ai/run/" + modelId;
 
-            // 2. Map the Multer Buffer memory directly into an unsigned 8-bit integer array stream
-            const imageByteArray = Array.from(new Uint8Array(req.file.buffer));
+            // 2. Format the user's uploaded photo into a standard Base64 Data URI string matching Cloudflare's schema
+            const userImageBase64 = req.file.buffer.toString('base64');
+            const imageDataUri = "data:" + req.file.mimetype + ";base64," + userImageBase64;
 
-            console.log("📡 Shipping structured byte array payload over native JSON connection...");
+            console.log("📡 Shipping base64 Data URI payload to Pruna AI...");
 
-            // 3. Fire request using clean application/json properties instead of forms
+            // 3. Fire the request over Axios with strict JSON structural mapping
             const cfResponse = await axios.post(
                 targetUrl, 
                 {
                     prompt: style.promptTemplate,
-                    image: imageByteArray, // Pass binary array layout elements directly
-                    strength: 0.65,        // 0.1 holds source composition, 0.9 reconstructs completely
-                    num_steps: 20
+                    images: [imageDataUri], // Matches the string[] schema from the screenshot
+                    aspect_ratio: "1:1",
+                    turbo: true
                 },
                 {
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
                     },
-                    responseType: 'arraybuffer', // Tells Axios to intercept the output response stream as binary
-                    timeout: 45000
+                    timeout: 60000 // Grant it up to 60 seconds to process complex compositions
                 }
             );
 
-            // 4. Convert generated binary response stream straight to a clean base64 string
-            const resultImageBase64 = Buffer.from(cfResponse.data, 'binary').toString('base64');
+            // 4. Extract the resulting image output url or base64 based on your dashboard output specs
+            const outputAsset = cfResponse.data?.result?.image || cfResponse.data?.image;
+            
+            if (!outputAsset) {
+                console.error('[Cloudflare Payload Error]', JSON.stringify(cfResponse.data));
+                throw new Error("Cloudflare did not return any image asset parameter.");
+            }
 
-            const resultPart = {
-                inline_data: {
-                    mime_type: 'image/png',
-                    data: resultImageBase64
-                }
-            };
+            let finalBase64String = "";
+            let resultBase64 = "";
 
-            console.log("🎯 Success! Cloudflare completed img2img compilation flawlessly!");
+            if (outputAsset.startsWith("http")) {
+                // If Cloudflare returns a presigned asset URL link, download it and convert to base64
+                console.log("🔗 Downloading completed asset from presigned link...");
+                const downloadRes = await axios.get(outputAsset, { responseType: 'arraybuffer' });
+                finalBase64String = Buffer.from(downloadRes.data, 'binary').toString('base64');
+                resultBase64 = "data:image/png;base64," + finalBase64String;
+            } else {
+                // If Cloudflare returns a direct base64 Data URI string
+                resultBase64 = outputAsset;
+                finalBase64String = outputAsset.replace(/^data:image\/[a-z]+;base64,/, "");
+            }
 
-            const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
+            console.log("🎯 Success! Pruna AI restyled and compiled the image flawlessly!");
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
-            // Send photo buffer securely to your destination Telegram log channel
+            // Fire-and-forget archive to your Telegram Storage Channel using the clean image buffer
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
-                source: Buffer.from(resultPart.inline_data.data, 'base64')
+                source: Buffer.from(finalBase64String, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
 
             res.json({
@@ -583,22 +594,19 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
-            // Safe fallback extraction block to check for detailed API failure metrics
             let errString = genErr.message;
             if (genErr.response?.data) {
-                try {
-                    errString = Buffer.from(genErr.response.data).toString();
-                } catch (e) {
-                    errString = "Binary parse exception across network error layer.";
-                }
+                errString = typeof genErr.response.data === 'object' 
+                    ? JSON.stringify(genErr.response.data) 
+                    : genErr.response.data.toString();
             }
             
-            console.error('[Imagegen Cloudflare Generation Error detail]:', errString);
+            console.error('[Imagegen Pruna AI Generation Error detail]:', errString);
             
             await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
             res.status(500).json({ error: 'Generation failed — DASH refunded' });
-                  }
+        }
           
     } catch (err) {
         console.error('Imagegen generate route error:', err);
