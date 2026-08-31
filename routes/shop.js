@@ -529,71 +529,93 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             { user_id: userId },
             { $inc: { balance: -config.cost } },
             { new: true }
-        );
-                try {
-            console.log("🚀 Initializing Cloudflare Workers AI Pruna img2img pipeline...");
+        );        
+        try {
+            console.log("👁️ Step 1: Running free image-to-text facial structure analysis with LLaVA...");
 
             const accountId = process.env.CLOUDFLARE_ACCOUNT_ID.trim();
-            
-            // 1. FIXED URL: The slash goes BEFORE the plus sign, and points to the base run endpoint
-            const targetUrl = "https://api.cloudflare.com/client/v4/accounts/" + accountId + "/ai/run";
+            const bearerToken = process.env.CLOUDFLARE_API_TOKEN.trim();
 
-            // 2. Format the user's uploaded photo into a standard Base64 Data URI string matching Cloudflare's schema
-            const userImageBase64 = req.file.buffer.toString('base64');
-            const imageDataUri = "data:" + req.file.mimetype + ";base64," + userImageBase64;
+            // 1. FIXED ENDPOINT ROUTING: Added 'api.' prefix and the full accounts sub-directories path
+            const visionModelId = "@cf/llava-hf/llava-1.5-7b-hf";
+            const visionUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${visionModelId}`;
 
-            console.log("📡 Shipping base64 Data URI payload to Pruna AI via endpoint: " + targetUrl);
+            // 2. SCHEMA COMPLIANCE: Convert raw buffer into an 8-bit unsigned integer array (values 0-255)
+            const imageByteArray = Array.from(new Uint8Array(req.file.buffer));
 
-            // 3. Fire the request over Axios matching the Cloudflare REST API example structure exactly
-            const cfResponse = await axios.post(
-                targetUrl, 
+            console.log("📡 Shipping compliant binary array payload to LLaVA AI...");
+
+            // 3. Fire the request matching the provided schema definition exactly
+            const visionResponse = await axios.post(
+                visionUrl,
                 {
-                    // CRITICAL SCHEMA ALIGNMENT: Pass the model name and input parameters inside the JSON body
-                    model: "pruna/p-image-edit",
-                    input: {
-                        prompt: style.promptTemplate,
-                        images: [imageDataUri], 
-                        aspect_ratio: "1:1",
-                        turbo: true
-                    }
+                    image: imageByteArray,
+                    prompt: "Describe the person, hair style, facial traits, age, gender, clothing, and full structural pose layout in this picture in complete, objective detail for a drawing reference.",
+                    max_tokens: 512
                 },
                 {
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': "Bearer " + process.env.CLOUDFLARE_API_TOKEN.trim()
+                        'Authorization': "Bearer " + bearerToken
                     },
-                    timeout: 60000 
+                    timeout: 40000
                 }
             );
 
-            // 4. Extract the resulting image output based on your dashboard output specs
-            const outputAsset = cfResponse.data?.result?.image || cfResponse.data?.image;
-            
-            if (!outputAsset) {
-                console.error('[Cloudflare Payload Error]', JSON.stringify(cfResponse.data));
-                throw new Error("Cloudflare did not return any image asset parameter.");
+            // Extract text outputs smoothly from Cloudflare's structural schema response
+            const imageDescription = visionResponse.data?.result?.description || visionResponse.data?.result?.answer || visionResponse.data?.result?.response || visionResponse.data?.result?.text;
+
+            if (!imageDescription) {
+                console.error('[Cloudflare LLaVA Extraction Failure]:', JSON.stringify(visionResponse.data));
+                throw new Error("Free LLaVA vision architecture failed to compile an image descriptor text layout.");
             }
 
-            let finalBase64String = "";
-            let resultBase64 = "";
+            console.log("📝 Step 2: Face and pose analysis compiled successfully! Blending with sketch style rules...");
 
-            if (outputAsset.startsWith("http")) {
-                console.log("🔗 Downloading completed asset from presigned link...");
-                const downloadRes = await axios.get(outputAsset, { responseType: 'arraybuffer' });
-                finalBase64String = Buffer.from(downloadRes.data, 'binary').toString('base64');
-                resultBase64 = "data:image/png;base64," + finalBase64String;
-            } else {
-                resultBase64 = outputAsset;
-                finalBase64String = outputAsset.replace(/^data:image\/[a-z]+;base64,/, "");
-            }
+            // Combine your art styling rules (sketchbook lines, shading) with LLaVA's layout description traits
+            const combinedArtPrompt = style.promptTemplate + ". The target elements to reconstruct are: " + imageDescription;
 
-            console.log("🎯 Success! Pruna AI restyled and compiled the image flawlessly!");
+            console.log("🎨 Step 3: Pushing final prompt to free native Stable Diffusion pipeline...");
+
+            // 4. FIXED ENDPOINT ROUTING: Applied same full REST structure patterns here to avoid 404 domain drops
+            const generationModelId = "@cf/stabilityai/stable-diffusion-xl-base-1.0";
+            const generationUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${generationModelId}`;
+
+            const generationResponse = await axios.post(
+                generationUrl,
+                {
+                    prompt: combinedArtPrompt,
+                    num_steps: 20
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': "Bearer " + bearerToken
+                    },
+                    responseType: 'arraybuffer', // Stable Diffusion returns raw new sketch binary chunks instantly
+                    timeout: 45000
+                }
+            );
+
+            // 5. Convert raw response binary data block back into standard Base64 response outputs
+            const finalImageBase64 = Buffer.from(generationResponse.data, 'binary').toString('base64');
+
+            const resultPart = {
+                inline_data: {
+                    mime_type: 'image/png',
+                    data: finalImageBase64
+                }
+            };
+
+            console.log("🎯 Success! Combined pipeline successfully matched features and compiled the sketch for free!");
+
+            const resultBase64 = `data:${resultPart.inline_data.mime_type};base64,${resultPart.inline_data.data}`;
 
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'success' });
 
             // Fire-and-forget archive to your Telegram Storage Channel using the clean image buffer
             bot.telegram.sendPhoto(STORAGE_CHANNEL_ID, {
-                source: Buffer.from(finalBase64String, 'base64')
+                source: Buffer.from(resultPart.inline_data.data, 'base64')
             }).catch(err => console.error('[Imagegen Archive Error]:', err.message));
 
             res.json({
@@ -605,15 +627,16 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             });
 
         } catch (genErr) {
-
             let errString = genErr.message;
             if (genErr.response?.data) {
-                errString = typeof genErr.response.data === 'object' 
-                    ? JSON.stringify(genErr.response.data) 
-                    : genErr.response.data.toString();
+                try {
+                    errString = Buffer.from(genErr.response.data).toString();
+                } catch (e) {
+                    errString = JSON.stringify(genErr.response.data);
+                }
             }
             
-            console.error('[Imagegen Pruna AI Generation Error detail]:', errString);
+            console.error('[Imagegen Combined Free Loop Error detail]:', errString);
             
             await User.findOneAndUpdate({ user_id: userId }, { $inc: { balance: config.cost } });
             await ImageGenLog.create({ userId, styleId, cost: config.cost, status: 'refunded' });
