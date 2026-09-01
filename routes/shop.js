@@ -550,7 +550,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
                 visionUrl,
                 {
                     image: imageByteArray,
-                    prompt: "Describe the person, hair style, facial traits, age, gender, clothing, and full structural pose layout in this picture in complete, objective detail for a drawing reference.",
+                    prompt: "In one detailed sentence, describe this person's approximate age, gender, hair color and style, skin tone, eye color, face shape, any distinguishing facial features, body build, and clothing — in that exact order, as plain descriptive text with no commentary.",
                     max_tokens: 512
                 },
                 {
@@ -573,7 +573,7 @@ router.post('/api/secure/shop/imagegen/generate', validateInitData, upload.singl
             console.log("📝 Step 2: Face and pose analysis compiled successfully! Blending with sketch style rules...");
 
             // Combine your art styling rules (sketchbook lines, shading) with LLaVA's layout description traits
-            const combinedArtPrompt = style.promptTemplate + ". The target elements to reconstruct are: " + imageDescription;
+            const combinedArtPrompt = "A photorealistic portrait of " + imageDescription + ". Reimagined in the following style: " + style.promptTemplate;
 
             console.log("🎨 Step 3: Pushing final prompt to free native Stable Diffusion pipeline...");
 
