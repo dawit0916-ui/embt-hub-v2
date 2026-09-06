@@ -5,7 +5,7 @@
 const admins = process.env.ADMINS.split(',').map(id => parseInt(id));
 
 const STORAGE_CHANNEL_ID = process.env.STORAGE_CHANNEL_ID;
-
+const BOT_USERNAME = process.env.BOT_USERNAME || 'Dashearn_bot';
 const CONFIG_CHANNEL_ID = -1003931137962; // private CMS channel
 const PUBLIC_GROUP_ID = -1002352280130;   // your group
 const PUBLIC_CHANNEL_ID = -1003473429839; // your channel
@@ -23,6 +23,7 @@ module.exports = {
     CONFIG_CHANNEL_ID,
     PUBLIC_GROUP_ID,
     PUBLIC_CHANNEL_ID,
+    BOT_USERNAME,
     PORT,
     FAST_TASK_ADSGRAM_BLOCK_ID,
 };
