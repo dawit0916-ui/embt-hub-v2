@@ -3,24 +3,27 @@ const router = express.Router();
 
 const validateInitData = require('../middleware/validateInitData');
 const bot = require('../bot/bot');
-const { admins } = require('../config/constants');
+const { admins, BOT_USERNAME } = require('../config/constants');
 const { User } = require('../models');
+
+// Helper: UTC-midnight day difference, so timezones don't cause double/missed increments
+function utcDayDiff(a, b) {
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const utcA = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
+    const utcB = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate());
+    return Math.round((utcA - utcB) / msPerDay);
+}
 
 router.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
-        // 1. TRUST THE MIDDLEWARE: validateInitData has already cryptographically verified the user
-        // and populated 'req.tgUser' securely!
         if (!req.tgUser || !req.tgUser.id) {
             return res.status(401).json({ error: "Unauthorized: Missing authentication token context." });
         }
 
         const userId = Number(req.tgUser.id);
-
-        // 2. Query your database collection directly using the verified Telegram account ID
-        const user = await User.findOne({ user_id: userId });
+        let user = await User.findOne({ user_id: userId });
 
         if (user) {
-            // Optional: Handle cleanup of welcome message if tracked
             if (user.pending_message_cleanup && user.pending_message_cleanup.length > 0) {
                 for (const msgId of user.pending_message_cleanup) {
                     try {
@@ -32,13 +35,47 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 await User.updateOne({ user_id: userId }, { $set: { pending_message_cleanup: [] } });
             }
 
-            // 3. Build a fully mapped data profile configuration matrix block
+            // --- NEW: streak update (idempotent per calendar day) ---
+            const now = new Date();
+            let { currentStreak = 0, longestStreak = 0, lastStreakDate } = user;
+
+            if (!lastStreakDate) {
+                currentStreak = 1;
+            } else {
+                const diff = utcDayDiff(now, lastStreakDate);
+                if (diff === 1) {
+                    currentStreak += 1;
+                } else if (diff > 1) {
+                    currentStreak = 1;
+                }
+                // diff === 0 → already checked in today, leave currentStreak unchanged
+            }
+            longestStreak = Math.max(longestStreak, currentStreak);
+
+            if (!lastStreakDate || utcDayDiff(now, lastStreakDate) >= 1) {
+                await User.updateOne(
+                    { user_id: userId },
+                    { $set: { currentStreak, longestStreak, lastStreakDate: now } }
+                );
+            }
+
+            // --- NEW: rank / percentile (based on balance, same metric as leaderboard "points" tab) ---
+            const totalUsers = await User.countDocuments({ is_banned: false });
+            const higherCount = await User.countDocuments({
+                is_banned: false,
+                balance: { $gt: user.balance || 0 }
+            });
+            const rank = higherCount + 1;
+            const topPercent = totalUsers > 0 ? Math.max(1, Math.round((rank / totalUsers) * 100)) : null;
+
+            const referralLink = `https://t.me/${BOT_USERNAME}?start=${user.user_id}`;
+
             const accountMetricsPayload = {
                 success: true,
                 user_id: user.user_id,
                 first_name: user.first_name || 'User',
                 balance: user.balance || 0,
-                level: user.level || 0, 
+                level: user.level || 0,
                 total_earned: user.total_earned || 0,
                 referrals: user.referralCount || 0,
                 tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
@@ -47,17 +84,23 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 red_flag: user.red_flag || false,
                 tasks_added: user.tasks_added || 0,
                 createdAt: user.createdAt,
-                isAdmin: typeof admins !== 'undefined' ? admins.includes(userId) : false
+                isAdmin: typeof admins !== 'undefined' ? admins.includes(userId) : false,
+
+                // NEW fields
+                currentStreak,
+                longestStreak,
+                rank,
+                totalUsers,
+                topPercent,
+                referralLink
             };
 
-            // Return BOTH structural patterns to satisfy all frontend setup variations perfectly
             return res.json({
                 ...accountMetricsPayload,
-                profile: accountMetricsPayload // Matches the 'data.profile' frontend verification path
+                profile: accountMetricsPayload
             });
 
         } else {
-            // Fallback object initialization if a record hasn't synced into the system yet
             const defaultEmptyPayload = {
                 success: false,
                 balance: 0,
@@ -68,7 +111,13 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 tasks_added: 0,
                 is_banned: false,
                 red_flag: false,
-                isAdmin: false
+                isAdmin: false,
+                currentStreak: 0,
+                longestStreak: 0,
+                rank: null,
+                totalUsers: null,
+                topPercent: null,
+                referralLink: null
             };
 
             return res.json({
