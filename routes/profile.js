@@ -6,13 +6,6 @@ const bot = require('../bot/bot');
 const { admins } = require('../config/constants');
 const { User } = require('../models');
 
-// Helper: UTC-midnight day difference, so timezones don't cause double/missed increments
-function utcDayDiff(a, b) {
-    const msPerDay = 24 * 60 * 60 * 1000;
-    const utcA = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
-    const utcB = Date.UTC(b.getUTCFullYear(), b.getUTCMonth(), b.getUTCDate());
-    return Math.round((utcA - utcB) / msPerDay);
-}
 
 router.get('/api/secure/profile', validateInitData, async (req, res) => {
     try {
@@ -33,30 +26,6 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                     }
                 }
                 await User.updateOne({ user_id: userId }, { $set: { pending_message_cleanup: [] } });
-            }
-
-            // --- NEW: streak update (idempotent per calendar day) ---
-            const now = new Date();
-            let { currentStreak = 0, longestStreak = 0, lastStreakDate } = user;
-
-            if (!lastStreakDate) {
-                currentStreak = 1;
-            } else {
-                const diff = utcDayDiff(now, lastStreakDate);
-                if (diff === 1) {
-                    currentStreak += 1;
-                } else if (diff > 1) {
-                    currentStreak = 1;
-                }
-                // diff === 0 → already checked in today, leave currentStreak unchanged
-            }
-            longestStreak = Math.max(longestStreak, currentStreak);
-
-            if (!lastStreakDate || utcDayDiff(now, lastStreakDate) >= 1) {
-                await User.updateOne(
-                    { user_id: userId },
-                    { $set: { currentStreak, longestStreak, lastStreakDate: now } }
-                );
             }
 
             // --- NEW: rank / percentile (based on balance, same metric as leaderboard "points" tab) ---
@@ -87,8 +56,8 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 isAdmin: typeof admins !== 'undefined' ? admins.includes(userId) : false,
 
                 // NEW fields
-                currentStreak,
-                longestStreak,
+                currentStreak: user.currentStreak,
+                longestStreak: user.longestStreak,
                 rank,
                 totalUsers,
                 topPercent
