@@ -3,7 +3,7 @@ const router = express.Router();
 
 const validateInitData = require('../middleware/validateInitData');
 const bot = require('../bot/bot');
-const { admins, BOT_USERNAME } = require('../config/constants');
+const { admins } = require('../config/constants');
 const { User } = require('../models');
 
 // Helper: UTC-midnight day difference, so timezones don't cause double/missed increments
@@ -68,7 +68,7 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
             const rank = higherCount + 1;
             const topPercent = totalUsers > 0 ? Math.max(1, Math.round((rank / totalUsers) * 100)) : null;
 
-            const referralLink = `https://t.me/${BOT_USERNAME}?start=${user.user_id}`;
+            
 
             const accountMetricsPayload = {
                 success: true,
@@ -91,8 +91,8 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 longestStreak,
                 rank,
                 totalUsers,
-                topPercent,
-                referralLink
+                topPercent
+                
             };
 
             return res.json({
@@ -116,8 +116,8 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 longestStreak: 0,
                 rank: null,
                 totalUsers: null,
-                topPercent: null,
-                referralLink: null
+                topPercent: null
+                
             };
 
             return res.json({
