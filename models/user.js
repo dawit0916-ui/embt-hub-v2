@@ -44,11 +44,14 @@ const User = mongoose.model('User', new mongoose.Schema({
         youtube_tasks: { type: Boolean, default: false },
         priority_support: { type: Boolean, default: false }
     },
-
     // --- NEW: streak tracking ---
     currentStreak: { type: Number, default: 0 },
     longestStreak: { type: Number, default: 0 },
-    lastStreakDate: { type: Date, default: null }
+    lastStreakDate: { type: Date, default: null },
+    streakDay: { type: Number, default: 1, min: 1, max: 7 },
+    lastClaimDate: { type: Date, default: null }
+    
+    
 }));
 
 module.exports = User;
