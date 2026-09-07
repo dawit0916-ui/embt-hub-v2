@@ -38,6 +38,7 @@ app.use('/', require('./routes/proofs'));
 app.use('/', require('./routes/ads'));
 app.use('/', require('./routes/levels'));
 app.use('/', require('./routes/dailyTasks'));
+app.use('/', require('./routes/streak'));
 app.use('/', require('./routes/support'));
 app.use('/', require('./routes/referrals'));
 app.use('/', require('./routes/broadcast'));
