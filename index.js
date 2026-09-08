@@ -29,6 +29,7 @@ app.use('/api', enforceGlobalMaintenanceGate);
 app.use('/', require('./routes/verification'));
 app.use('/', require('./routes/adminStats'));
 app.use('/', require('./routes/reminders'));
+app.use('/', require('./routes/banners'));
 app.use('/', require('./routes/console'));
 app.use('/', require('./routes/profile'));
 app.use('/', require('./routes/settings'));
