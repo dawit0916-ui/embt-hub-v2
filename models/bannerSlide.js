@@ -8,6 +8,7 @@ const bannerSlideSchema = new mongoose.Schema({
   order: { type: Number, default: 0 },              // display order
   isActive: { type: Boolean, default: true },
   clickCount: { type: Number, default: 0 },
+  resetClicksAt: { type: Date, default: null },
   actionType: {
      type: String,
      enum: ['tab', 'shop-section', 'earn-section', 'url', 'none'],
