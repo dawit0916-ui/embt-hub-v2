@@ -67,5 +67,13 @@ router.get('/api/image/:fileId', async (req, res) => {
   }
 });
 
+router.post('/api/banners/:id/click', async (req, res) => {
+  try {
+    await BannerSlide.findByIdAndUpdate(req.params.id, { $inc: { clickCount: 1 } });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false });
+  }
+});
 
 module.exports = router;
