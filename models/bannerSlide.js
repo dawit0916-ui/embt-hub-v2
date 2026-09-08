@@ -8,9 +8,9 @@ const bannerSlideSchema = new mongoose.Schema({
   order: { type: Number, default: 0 },              // display order
   isActive: { type: Boolean, default: true },
   actionType: {
-    type: String,
-    enum: ['tab', 'section', 'url', 'modal', 'none'],
-    default: 'none'
+     type: String,
+     enum: ['tab', 'shop-section', 'earn-section', 'url', 'none'],
+     default: 'none'
   },
   actionTarget: { type: String, default: '' },       // e.g. "shop", "earn", "https://..."
   createdAt: { type: Date, default: Date.now }
