@@ -25,6 +25,7 @@ const UserPurchase = require('./userPurchase');
 const ImageStylePreset = require('./imageStylePreset');
 const ImageGenLog = require('./imageGenLog');
 const ImageGenConfig = require('./imageGenConfig');
+const BannerSlide = require('./bannerSlide');
 
 module.exports = {
     User,
@@ -51,4 +52,5 @@ module.exports = {
     ImageStylePreset,
     ImageGenLog,
     ImageGenConfig,
+    BannerSlide,
 };
