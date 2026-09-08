@@ -76,4 +76,18 @@ router.post('/api/banners/:id/click', async (req, res) => {
   }
 });
 
+router.post('/api/admin/banners/:id/reset-clicks', validateAdmin, async (req, res) => {
+  try {
+    const slide = await BannerSlide.findByIdAndUpdate(
+      req.params.id,
+      { clickCount: 0, resetClicksAt: new Date() },
+      { new: true }
+    );
+    if (!slide) return res.status(404).json({ success: false, error: 'Slide not found' });
+    res.json({ success: true, slide });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
