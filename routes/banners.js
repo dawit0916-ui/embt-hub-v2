@@ -56,15 +56,50 @@ router.post('/api/admin/banners/upload', validateAdmin, upload.single('image'), 
   }
 });
 router.get('/api/image/:fileId', async (req, res) => {
-  try {
-    const link = await bot.telegram.getFileLink(req.params.fileId);
-    const response = await fetch(link.href);
-    res.set('Content-Type', response.headers.get('content-type') || 'image/jpeg');
-    res.set('Cache-Control', 'public, max-age=86400'); // cache 1 day, avoids re-hitting Telegram every load
-    response.body.pipe(res);
-  } catch (err) {
-    res.status(404).json({ success: false, error: 'Image not found' });
-  }
+    try {
+        const { fileId } = req.params;
+
+        let filePath;
+        try {
+            const fileInfo = await bot.telegram.getFile(fileId);
+            filePath = fileInfo.file_path;
+        } catch (err) {
+            console.error('[Telegram getFile Error]:', err);
+            return res.status(404).json({ success: false, error: 'Image not found' });
+        }
+
+        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
+
+        try {
+            const response = await axios.get(telegramDownloadUrl, {
+                responseType: 'stream',
+                timeout: 15000,
+                maxRedirects: 5
+            });
+
+            res.setHeader('Content-Type', response.headers['content-type'] || 'image/jpeg');
+            res.setHeader('Cache-Control', 'public, max-age=86400');
+
+            response.data.pipe(res);
+
+            response.data.on('error', (err) => {
+                console.error('[Image Stream Error]:', err.message);
+                if (!res.headersSent) res.status(500).json({ success: false, error: 'Stream interrupted' });
+                else res.end();
+            });
+            req.on('close', () => {
+                if (response.data && typeof response.data.destroy === 'function') {
+                    response.data.destroy();
+                }
+            });
+        } catch (err) {
+            console.error('[Image Download Error]:', err.message);
+            if (!res.headersSent) return res.status(500).json({ success: false, error: 'Failed to load image' });
+        }
+    } catch (err) {
+        console.error('[Image Route Error]:', err);
+        if (!res.headersSent) return res.status(500).json({ success: false, error: 'Server error' });
+    }
 });
 
 router.post('/api/banners/:id/click', async (req, res) => {
