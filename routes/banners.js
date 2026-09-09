@@ -47,10 +47,10 @@ router.post('/api/admin/banners/upload', validateAdmin, upload.single('image'), 
       source: req.file.buffer
     });
 
-    // Telegram returns multiple sizes; take the largest
     const fileId = sent.photo[sent.photo.length - 1].file_id;
+    const imageUrl = `${req.protocol}://${req.get('host')}/api/image/${fileId}`;
 
-    res.json({ success: true, fileId });
+    res.json({ success: true, fileId, imageUrl });
   } catch (err) {
     console.error('Banner upload error:', err);
     res.status(500).json({ success: false, error: err.message });
