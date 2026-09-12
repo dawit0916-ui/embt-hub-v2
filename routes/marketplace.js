@@ -228,11 +228,12 @@ router.post(
         });
         return res.status(403).json({ error: 'Submission blocked due to network security flag.' });
       }
-      // --- upload screenshot to storage channel (missing) ---
-     const screenshotFileId = await uploadScreenshotToStorage(
+            // --- upload screenshot to storage channel ---
+      const screenshotFileId = await uploadScreenshotToStorage(
         req.file.buffer,
         `Task:${taskId} Viewer:${viewerUserId}`
       );
+
       // --- 4. OCR check: video ID + elapsed time ---
       const ocrOk =
         req.ocrResult.videoId === task.videoId &&
@@ -251,7 +252,7 @@ router.post(
 
       const submission = await MarketplaceSubmission.create({
         taskId, viewerUserId, taskStartedAt,
-        screenshotFileId: null,        
+        screenshotFileId,
         sha256: req.fingerprintCheck.sha256,
         pHash: req.fingerprintCheck.pHash,
         ocrVideoId: req.ocrResult.videoId,
@@ -276,11 +277,16 @@ router.post(
 
       // --- 6. approved: atomic DASH transaction ---
       const result = await approveSubmission(submission, task);
-       if (!result.approved) {
-       return res.json({ success: true, status: 'pending_review', reason: result.reason });
-         }
+      if (!result.approved) {
+        return res.json({ success: true, status: 'pending_review', reason: result.reason });
+      }
       res.json({ success: true, status: 'approved' });
+    } catch (err) {
+      console.error('POST /marketplace/submit failed', err.message);
+      res.status(500).json({ error: 'Could not process submission' });
+    }
+  }
+);
 
-          
 module.exports = router;
 module.exports.approveSubmission = approveSubmission;
