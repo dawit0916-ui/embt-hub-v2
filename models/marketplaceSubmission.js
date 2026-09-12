@@ -4,7 +4,7 @@ const marketplaceSubmissionSchema = new mongoose.Schema({
   taskId: { type: mongoose.Schema.Types.ObjectId, ref: 'MarketplaceTask', required: true, index: true },
   viewerUserId: { type: Number, required: true, index: true },
   taskStartedAt: { type: Date, required: true }, // when viewer tapped "Start earning"
-  screenshotUrl: { type: String, required: true },
+  screenshotFileId: { type: String, default: null },
   sha256: { type: String, required: true, index: true },
   pHash: { type: String, required: true, index: true },
   ocrVideoId: { type: String, default: null },
