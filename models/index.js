@@ -26,6 +26,9 @@ const ImageStylePreset = require('./imageStylePreset');
 const ImageGenLog = require('./imageGenLog');
 const ImageGenConfig = require('./imageGenConfig');
 const BannerSlide = require('./bannerSlide');
+const MarketplaceTask = require('./marketplaceTask');
+const MarketplaceSubmission = require('./marketplaceSubmission');
+const ScreenshotFingerprint = require('./screenshotFingerprint');
 
 module.exports = {
     User,
@@ -53,4 +56,7 @@ module.exports = {
     ImageGenLog,
     ImageGenConfig,
     BannerSlide,
+    MarketplaceTask,
+    MarketplaceSubmission,
+    ScreenshotFingerprint,
 };
