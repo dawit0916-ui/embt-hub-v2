@@ -36,6 +36,7 @@ app.use('/', require('./routes/settings'));
 app.use('/', require('./routes/tasks'));
 app.use('/', require('./routes/adminUsers'));
 app.use('/', require('./routes/proofs'));
+app.use('/api/marketplace', require('./routes/marketplace')); 
 app.use('/api/admin/marketplace', require('./routes/adminMarketplace'));
 app.use('/', require('./routes/ads'));
 app.use('/', require('./routes/levels'));
