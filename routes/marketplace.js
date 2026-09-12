@@ -10,6 +10,7 @@ const fingerprintCheck = require('../middleware/fingerprintCheck');
 const ocrStatsForNerds = require('../middleware/ocrStatsForNerds');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const { uploadScreenshotToStorage } = require('../utils/telegramStorage');
 
 function extractVideoId(url) {
   const match = url.match(/(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([a-zA-Z0-9_-]{6,})/);
@@ -133,6 +134,46 @@ router.delete('/task/:id', validateInitData, async (req, res) => {
   }
 });
 
+// add this function above the router.post('/submit', ...) block
+async function approveSubmission(submission, task) {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const creator = await User.findOne({ user_id: task.creatorUserId }).session(session);
+
+    if (!creator || creator.balance < task.pointCost) {
+      await MarketplaceTask.updateOne(
+        { _id: task._id },
+        { status: 'paused', pauseReason: 'insufficient_balance' },
+        { session }
+      );
+      await MarketplaceSubmission.updateOne(
+        { _id: submission._id },
+        { status: 'pending_review', rejectionReason: 'creator_insufficient_balance' },
+        { session }
+      );
+      await session.commitTransaction();
+      return { approved: false, reason: 'creator_balance_insufficient' };
+    }
+
+    await User.updateOne({ user_id: task.creatorUserId }, { $inc: { balance: -task.pointCost } }, { session });
+    await User.updateOne({ user_id: submission.viewerUserId }, { $inc: { balance: task.pointCost } }, { session });
+    await MarketplaceTask.updateOne(
+      { _id: task._id },
+      { $inc: { viewsApproved: 1, dashSpent: task.pointCost } },
+      { session }
+    );
+    await MarketplaceSubmission.updateOne({ _id: submission._id }, { status: 'approved' }, { session });
+
+    await session.commitTransaction();
+    return { approved: true };
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    session.endSession();
+  }
+}
 // ---------------------------------------------------------------
 // POST /marketplace/submit — the full validation + payout pipeline
 // ---------------------------------------------------------------
@@ -157,7 +198,7 @@ router.post(
       if (req.fingerprintCheck.isDuplicate) {
         await MarketplaceSubmission.create({
           taskId, viewerUserId, taskStartedAt,
-          screenshotUrl: null, // not stored on reject to save space — adjust if you want to keep evidence
+          screenshotFileId: null, // not stored on reject to save space — adjust if you want to keep evidence
           sha256: req.fingerprintCheck.sha256,
           pHash: req.fingerprintCheck.pHash,
           country: req.vpnCheck.country,
@@ -177,7 +218,7 @@ router.post(
       if (req.vpnCheck.action === 'block') {
         await MarketplaceSubmission.create({
           taskId, viewerUserId, taskStartedAt,
-          screenshotUrl: null,
+          screenshotFileId: null,
           sha256: req.fingerprintCheck.sha256,
           pHash: req.fingerprintCheck.pHash,
           country: req.vpnCheck.country,
@@ -187,7 +228,11 @@ router.post(
         });
         return res.status(403).json({ error: 'Submission blocked due to network security flag.' });
       }
-
+      // --- upload screenshot to storage channel (missing) ---
+     const screenshotFileId = await uploadScreenshotToStorage(
+        req.file.buffer,
+        `Task:${taskId} Viewer:${viewerUserId}`
+      );
       // --- 4. OCR check: video ID + elapsed time ---
       const ocrOk =
         req.ocrResult.videoId === task.videoId &&
@@ -206,7 +251,7 @@ router.post(
 
       const submission = await MarketplaceSubmission.create({
         taskId, viewerUserId, taskStartedAt,
-        screenshotUrl: `/uploads/proofs/${Date.now()}_${viewerUserId}.jpg`, // wire to your actual storage (S3/GridFS/etc)
+        screenshotFileId: null,        
         sha256: req.fingerprintCheck.sha256,
         pHash: req.fingerprintCheck.pHash,
         ocrVideoId: req.ocrResult.videoId,
@@ -230,56 +275,12 @@ router.post(
       }
 
       // --- 6. approved: atomic DASH transaction ---
-      const session = await mongoose.startSession();
-      session.startTransaction();
-      try {
-        const creator = await User.findOne({ user_id: task.creatorUserId }).session(session);
+      const result = await approveSubmission(submission, task);
+       if (!result.approved) {
+       return res.json({ success: true, status: 'pending_review', reason: result.reason });
+         }
+      res.json({ success: true, status: 'approved' });
 
-        if (!creator || creator.balance < task.pointCost) {
-          // pause the task instead of letting it fail silently
-          await MarketplaceTask.updateOne(
-            { _id: task._id },
-            { status: 'paused', pauseReason: 'insufficient_balance' },
-            { session }
-          );
-          await MarketplaceSubmission.updateOne(
-            { _id: submission._id },
-            { status: 'pending_review', rejectionReason: 'creator_insufficient_balance' },
-            { session }
-          );
-          await session.commitTransaction();
-          return res.json({ success: true, status: 'pending_review', reason: 'creator_balance_insufficient' });
-        }
-
-        await User.updateOne(
-          { user_id: task.creatorUserId },
-          { $inc: { balance: -task.pointCost } },
-          { session }
-        );
-        await User.updateOne(
-          { user_id: viewerUserId },
-          { $inc: { balance: task.pointCost } },
-          { session }
-        );
-        await MarketplaceTask.updateOne(
-          { _id: task._id },
-          { $inc: { viewsApproved: 1, dashSpent: task.pointCost } },
-          { session }
-        );
-
-        await session.commitTransaction();
-        res.json({ success: true, status: 'approved' });
-      } catch (txErr) {
-        await session.abortTransaction();
-        throw txErr;
-      } finally {
-        session.endSession();
-      }
-    } catch (err) {
-      console.error('POST /marketplace/submit failed', err.message);
-      res.status(500).json({ error: 'Submission failed — try again' });
-    }
-  }
-);
-
+          
 module.exports = router;
+module.exports.approveSubmission = approveSubmission;
