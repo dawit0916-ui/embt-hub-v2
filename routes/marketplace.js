@@ -191,6 +191,7 @@ router.post(
       const viewerUserId = Number(req.tgUser.id);
       const { taskId, taskStartedAt } = req.body;
       const startedAtDate = new Date(taskStartedAt); // ← add this, used by both filename check and step 5
+      
       const task = await MarketplaceTask.findById(taskId);
       if (!task || task.status !== 'active') {
         return res.status(404).json({ error: 'Task not found or no longer active' });
@@ -199,13 +200,13 @@ router.post(
 
       let filenameTimestampMatch = 'not_present';
       if (filenameInfo.present) {
-      const graceMs = 5 * 60 * 1000; // 5 min grace window either side
-      const expectedTime = new Date(startedAtForFilename.getTime() + task.watchDurationSeconds * 1000);
-      const withinWindow =
-       filenameInfo.timestamp >= new Date(expectedTime.getTime() - graceMs) &&
-       filenameInfo.timestamp <= new Date(expectedTime.getTime() + graceMs);
-       filenameTimestampMatch = withinWindow ? 'match' : 'mismatch';
-     }
+       const graceMs = 5 * 60 * 1000;
+       const expectedTime = new Date(startedAtDate.getTime() + task.watchDurationSeconds * 1000);
+       const withinWindow =
+        filenameInfo.timestamp >= new Date(expectedTime.getTime() - graceMs) &&
+        filenameInfo.timestamp <= new Date(expectedTime.getTime() + graceMs);
+      filenameTimestampMatch = withinWindow ? 'match' : 'mismatch';
+      }
 
 
      let filenameAppMatch = 'not_present';
@@ -270,8 +271,8 @@ router.post(
         req.ocrResult.elapsedSeconds >= task.watchDurationSeconds;
 
       // --- 5. timestamp sanity check ---
-      const startedAt = new Date(taskStartedAt);
-      const minValidTime = new Date(startedAt.getTime() + task.watchDurationSeconds * 1000);
+      
+      const minValidTime = new Date(startedAtDate.getTime() + task.watchDurationSeconds * 1000);
       const now = new Date();
       const timestampOk = now >= minValidTime;
 
