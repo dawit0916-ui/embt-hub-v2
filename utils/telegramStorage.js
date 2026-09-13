@@ -1,4 +1,4 @@
-const { bot } = require('../bot/bot'); // adjust path to wherever your Telegraf instance is exported
+const bot = require('../bot/bot'); // adjust path to wherever your Telegraf instance is exported
 const { STORAGE_CHANNEL_ID } = require('../config/constants');
 
 // Uploads a screenshot buffer to the storage channel, returns the Telegram file_id
