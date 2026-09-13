@@ -197,22 +197,20 @@ router.post(
       }
       const filenameInfo = parseScreenshotFilename(req.file.originalname);
 
-       let filenameTimestampMatch = 'not_present';
        let filenameAppMatch = 'not_present';
+let filenameAppRaw = null;
+let filenameLikelyEdited = false;
 
-      if (filenameInfo.present) {
-         const startedAt = new Date(taskStartedAt);
-         const graceMs = 5 * 60 * 1000; // 5 min grace window either side
-         const withinWindow =
-         filenameInfo.timestamp >= new Date(startedAt.getTime() + task.watchDurationSeconds * 1000 - graceMs) &&
-         filenameInfo.timestamp <= new Date(startedAt.getTime() + task.watchDurationSeconds * 1000 + graceMs);
-         filenameTimestampMatch = withinWindow ? 'match' : 'mismatch';
+if (filenameInfo.present) {
+  filenameAppRaw = filenameInfo.appName;
+  filenameLikelyEdited = filenameInfo.likelyEdited;
 
-         const appLower = filenameInfo.appName.toLowerCase();
-        if (appLower.includes('youtube')) filenameAppMatch = 'youtube';
-        else if (appLower.includes('chrome')) filenameAppMatch = 'chrome';
-        else filenameAppMatch = 'other';
-       }
+  const appLower = filenameInfo.appName.toLowerCase();
+  if (appLower.includes('youtube')) filenameAppMatch = 'youtube';
+  else if (appLower.includes('chrome')) filenameAppMatch = 'chrome';
+  else if (filenameLikelyEdited) filenameAppMatch = 'edited';
+  else filenameAppMatch = 'other';
+}
        
       // --- 1. fingerprint check ---
       if (req.fingerprintCheck.isDuplicate) {
