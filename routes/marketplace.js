@@ -11,6 +11,8 @@ const ocrStatsForNerds = require('../middleware/ocrStatsForNerds');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 const { uploadScreenshotToStorage } = require('../utils/telegramStorage');
+const { parseScreenshotFilename } = require('../utils/filenameCheck');
+
 
 function extractVideoId(url) {
   const match = url.match(/(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([a-zA-Z0-9_-]{6,})/);
@@ -193,7 +195,25 @@ router.post(
       if (!task || task.status !== 'active') {
         return res.status(404).json({ error: 'Task not found or no longer active' });
       }
+      const filenameInfo = parseScreenshotFilename(req.file.originalname);
 
+       let filenameTimestampMatch = 'not_present';
+       let filenameAppMatch = 'not_present';
+
+      if (filenameInfo.present) {
+         const startedAt = new Date(taskStartedAt);
+         const graceMs = 5 * 60 * 1000; // 5 min grace window either side
+         const withinWindow =
+         filenameInfo.timestamp >= new Date(startedAt.getTime() + task.watchDurationSeconds * 1000 - graceMs) &&
+         filenameInfo.timestamp <= new Date(startedAt.getTime() + task.watchDurationSeconds * 1000 + graceMs);
+         filenameTimestampMatch = withinWindow ? 'match' : 'mismatch';
+
+         const appLower = filenameInfo.appName.toLowerCase();
+        if (appLower.includes('youtube')) filenameAppMatch = 'youtube';
+        else if (appLower.includes('chrome')) filenameAppMatch = 'chrome';
+        else filenameAppMatch = 'other';
+       }
+       
       // --- 1. fingerprint check ---
       if (req.fingerprintCheck.isDuplicate) {
         await MarketplaceSubmission.create({
@@ -253,6 +273,8 @@ router.post(
       const submission = await MarketplaceSubmission.create({
         taskId, viewerUserId, taskStartedAt,
         screenshotFileId,
+        filenameTimestampMatch,
+        filenameAppMatch,       
         sha256: req.fingerprintCheck.sha256,
         pHash: req.fingerprintCheck.pHash,
         ocrVideoId: req.ocrResult.videoId,
