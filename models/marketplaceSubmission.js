@@ -6,7 +6,8 @@ const marketplaceSubmissionSchema = new mongoose.Schema({
   taskStartedAt: { type: Date, required: true }, // when viewer tapped "Start earning"
   screenshotFileId: { type: String, default: null },
   filenameTimestampMatch: { type: String, default: 'not_present' }, // 'match' | 'mismatch' | 'not_present'
-  filenameAppMatch: { type: String, default: 'not_present' },       // 'youtube' | 'chrome' | 'other' | 'not_present'
+  filenameAppMatch: { type: String, default: 'not_present' }, // 'youtube' | 'chrome' | 'edited' | 'other' | 'not_present'
+  filenameAppRaw: { type: String, default: null },              // the actual captured app name, e.g. "Snapseed"
   sha256: { type: String, required: true, index: true },
   pHash: { type: String, required: true, index: true },
   ocrVideoId: { type: String, default: null },
