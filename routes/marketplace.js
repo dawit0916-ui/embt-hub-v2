@@ -190,27 +190,38 @@ router.post(
     try {
       const viewerUserId = Number(req.tgUser.id);
       const { taskId, taskStartedAt } = req.body;
-
+      const startedAtDate = new Date(taskStartedAt); // ← add this, used by both filename check and step 5
       const task = await MarketplaceTask.findById(taskId);
       if (!task || task.status !== 'active') {
         return res.status(404).json({ error: 'Task not found or no longer active' });
       }
       const filenameInfo = parseScreenshotFilename(req.file.originalname);
 
-       let filenameAppMatch = 'not_present';
-let filenameAppRaw = null;
-let filenameLikelyEdited = false;
+      let filenameTimestampMatch = 'not_present';
+      if (filenameInfo.present) {
+      const graceMs = 5 * 60 * 1000; // 5 min grace window either side
+      const expectedTime = new Date(startedAtForFilename.getTime() + task.watchDurationSeconds * 1000);
+      const withinWindow =
+       filenameInfo.timestamp >= new Date(expectedTime.getTime() - graceMs) &&
+       filenameInfo.timestamp <= new Date(expectedTime.getTime() + graceMs);
+       filenameTimestampMatch = withinWindow ? 'match' : 'mismatch';
+     }
 
-if (filenameInfo.present) {
-  filenameAppRaw = filenameInfo.appName;
-  filenameLikelyEdited = filenameInfo.likelyEdited;
 
-  const appLower = filenameInfo.appName.toLowerCase();
-  if (appLower.includes('youtube')) filenameAppMatch = 'youtube';
-  else if (appLower.includes('chrome')) filenameAppMatch = 'chrome';
-  else if (filenameLikelyEdited) filenameAppMatch = 'edited';
-  else filenameAppMatch = 'other';
-}
+     let filenameAppMatch = 'not_present';
+     let filenameAppRaw = null;
+     let filenameLikelyEdited = false;
+
+     if (filenameInfo.present) {
+      filenameAppRaw = filenameInfo.appName;
+      filenameLikelyEdited = filenameInfo.likelyEdited;
+
+      const appLower = filenameInfo.appName.toLowerCase();
+      if (appLower.includes('youtube')) filenameAppMatch = 'youtube';
+      else if (appLower.includes('chrome')) filenameAppMatch = 'chrome';
+      else if (filenameLikelyEdited) filenameAppMatch = 'edited';
+      else filenameAppMatch = 'other';
+      }
        
       // --- 1. fingerprint check ---
       if (req.fingerprintCheck.isDuplicate) {
