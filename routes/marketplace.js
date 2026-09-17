@@ -319,6 +319,21 @@ router.post(
     }
   }
 );
+// GET /marketplace/my-submissions — viewer's own proof history
+router.get('/my-submissions', validateInitData, async (req, res) => {
+  try {
+    const viewerUserId = Number(req.tgUser.id);
+    const submissions = await MarketplaceSubmission.find({ viewerUserId })
+      .populate('taskId')
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json({ submissions });
+  } catch (err) {
+    console.error('GET /marketplace/my-submissions failed', err.message);
+    res.status(500).json({ error: 'Could not load submissions' });
+  }
+});
 
 module.exports = router;
 module.exports.approveSubmission = approveSubmission;
