@@ -236,14 +236,31 @@ router.post(
           status: 'rejected',
           rejectionReason: `duplicate_screenshot_${req.fingerprintCheck.matchType}`,
         });
-        return res.status(403).json({ error: 'This screenshot has already been used for a submission.' });
+        return res.status(403).json({
+    error: 'This screenshot has already been used for a submission.',
+    duplicateFlag: true,
+    vpnAction: req.vpnCheck.action,
+    countryBlocked: false,
+    ocrVideoId: null,
+    expectedVideoId: task.videoId,
+    ocrElapsedSeconds: null,
+    requiredSeconds: task.watchDurationSeconds,
+  });
       }
 
       // --- 2. country check (per-task allowedCountries) ---
       if (task.allowedCountries.length > 0 && !task.allowedCountries.includes(req.vpnCheck.country)) {
-        return res.status(403).json({ error: 'This task is not available in your region.' });
-      }
-
+  return res.status(403).json({
+    error: 'This task is not available in your region.',
+    duplicateFlag: false,
+    vpnAction: req.vpnCheck.action,
+    countryBlocked: true,
+    ocrVideoId: null,
+    expectedVideoId: task.videoId,
+    ocrElapsedSeconds: null,
+    requiredSeconds: task.watchDurationSeconds,
+  });
+}
       // --- 3. VPN/fraud action ---
       if (req.vpnCheck.action === 'block') {
         await MarketplaceSubmission.create({
@@ -256,8 +273,17 @@ router.post(
           status: 'rejected',
           rejectionReason: 'vpn_fraud_score_block',
         });
-        return res.status(403).json({ error: 'Submission blocked due to network security flag.' });
-      }
+        return res.status(403).json({
+    error: 'Submission blocked due to network security flag.',
+    duplicateFlag: false,
+    vpnAction: 'block',
+    countryBlocked: false,
+    ocrVideoId: req.ocrResult.videoId,
+    expectedVideoId: task.videoId,
+    ocrElapsedSeconds: req.ocrResult.elapsedSeconds,
+    requiredSeconds: task.watchDurationSeconds,
+  });
+}
             // --- upload screenshot to storage channel ---
       const screenshotFileId = await uploadScreenshotToStorage(
         req.file.buffer,
@@ -304,15 +330,36 @@ router.post(
       });
 
       if (submissionStatus === 'pending_review') {
-        return res.json({ success: true, status: 'pending_review', submission });
-      }
-
+  return res.json({
+    success: true,
+    status: 'pending_review',
+    submission,
+    duplicateFlag: false,
+    vpnAction: req.vpnCheck.action,
+    countryBlocked: false,
+    ocrVideoId: req.ocrResult.videoId,
+    expectedVideoId: task.videoId,
+    ocrElapsedSeconds: req.ocrResult.elapsedSeconds,
+    requiredSeconds: task.watchDurationSeconds,
+  });
+}
       // --- 6. approved: atomic DASH transaction ---
       const result = await approveSubmission(submission, task);
-      if (!result.approved) {
-        return res.json({ success: true, status: 'pending_review', reason: result.reason });
-      }
-      res.json({ success: true, status: 'approved' });
+
+const breakdown = {
+  duplicateFlag: false,
+  vpnAction: req.vpnCheck.action,
+  countryBlocked: false,
+  ocrVideoId: req.ocrResult.videoId,
+  expectedVideoId: task.videoId,
+  ocrElapsedSeconds: req.ocrResult.elapsedSeconds,
+  requiredSeconds: task.watchDurationSeconds,
+};
+
+if (!result.approved) {
+  return res.json({ success: true, status: 'pending_review', reason: result.reason, ...breakdown });
+}
+res.json({ success: true, status: 'approved', ...breakdown });
     } catch (err) {
       console.error('POST /marketplace/submit failed', err.message);
       res.status(500).json({ error: 'Could not process submission' });
