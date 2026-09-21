@@ -89,7 +89,7 @@ router.get('/api/admin/users', validateAdmin, async (req, res) => {
                 username: u.username || 'N/A',
                 first_name: u.first_name || 'Member',
                 balance: u.balance || 0,
-                level: u.level || 0,
+                
                 total_earned: u.total_earned || 0,
                 referralCount: u.referralCount || 0,
                 tasksCompleted: u.completed_tasks ? u.completed_tasks.length : 0,
