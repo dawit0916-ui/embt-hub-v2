@@ -82,32 +82,7 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         const task = await Task.findOne({ id: taskId, enabled: true });
         if (!task) return res.status(404).json({ error: "Task not found." });
         // 2.5 ADD LEVEL CHECK FOR CUSTOM TASKS
-if (task.type === 'custom') {
-    if (!user.features_unlocked?.custom_tasks) {
-        const levelConfig = await LevelConfig.findOne({ features: 'custom_tasks' });
-        return res.status(403).json({
-            error: `Custom tasks unlock at Level ${levelConfig.level}`,
-            unlocksAtLevel: levelConfig.level
-        });
-    }
-}
 
-// 2.6 ADD LEVEL CHECK FOR TASK DURATION
-const DURATION_LEVEL_REQUIREMENT = {
-    'weekly': 3,
-    'monthly': 4,
-    'three_month': 5
-};
-
-if (task.duration && DURATION_LEVEL_REQUIREMENT[task.duration]) {
-    const requiredLevel = DURATION_LEVEL_REQUIREMENT[task.duration];
-    if ((user.level || 0) < requiredLevel) {
-        return res.status(403).json({
-            error: `${task.duration} duration tasks unlock at Level ${requiredLevel}`,
-            unlocksAtLevel: requiredLevel
-        });
-    }
-}
         // 3. ✅ TELEGRAM MEMBERSHIP VERIFICATION
         if (task.type === 'auto' && task.url && task.url.includes('t.me/')) {
     try {
