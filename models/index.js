@@ -15,9 +15,9 @@ const YoutubeTask = require('./youtubeTask');
 const TelegramVerification = require('./telegramVerification');
 const ReminderConfig = require('./reminderConfig');
 const UserReminder = require('./userReminder');
-const LevelConfig = require('./levelConfig');
+
 const FeatureUsageLog = require('./featureUsageLog');
-const PendingReaction = require('./pendingReaction');
+
 const CompletedTask = require('./completedTask');
 const ShopProduct = require('./shopProduct');
 const CourseLesson = require('./courseLesson');
@@ -45,9 +45,9 @@ module.exports = {
     TelegramVerification,
     ReminderConfig,
     UserReminder,
-    LevelConfig,
+    
     FeatureUsageLog,
-    PendingReaction,
+    
     CompletedTask,
     ShopProduct,
     CourseLesson,
