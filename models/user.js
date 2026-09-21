@@ -26,24 +26,7 @@ const User = mongoose.model('User', new mongoose.Schema({
     whitelisted: { type: Boolean, default: false },
 
     referred_by: { type: Number, default: null },
-    level: { type: Number, default: 0 },
-    purchased_levels: [Number],
-    level_purchase_history: [{
-        level: Number,
-        purchased_at: { type: Date, default: Date.now },
-        cost: Number
-    }],
-    features_unlocked: {
-        daily_tasks: { type: Boolean, default: false },
-        custom_tasks: { type: Boolean, default: false },
-        weekly_tasks: { type: Boolean, default: false },
-        monthly_tasks: { type: Boolean, default: false },
-        three_month_tasks: { type: Boolean, default: false },
-        whitelist: { type: Boolean, default: false },
-        analytics: { type: Boolean, default: false },
-        youtube_tasks: { type: Boolean, default: false },
-        priority_support: { type: Boolean, default: false }
-    },
+   
     // --- NEW: streak tracking ---
     currentStreak: { type: Number, default: 0 },
     longestStreak: { type: Number, default: 0 },
