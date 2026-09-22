@@ -128,7 +128,6 @@ router.post('/api/secure/purchase-course', validateInitData, async (req, res) =>
             { user_id: userId },
             {
                 $inc: { balance: -finalPrice },
-                $push: {
                     $push: {
                         history: {
                             title: `Course Purchase: ${product.title}`,
