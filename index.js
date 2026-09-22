@@ -39,8 +39,6 @@ app.use('/', require('./routes/proofs'));
 app.use('/api/marketplace', require('./routes/marketplace')); 
 app.use('/api/admin/marketplace', require('./routes/adminMarketplace'));
 app.use('/', require('./routes/ads'));
-app.use('/', require('./routes/levels'));
-app.use('/', require('./routes/dailyTasks'));
 app.use('/', require('./routes/streak'));
 app.use('/', require('./routes/support'));
 app.use('/', require('./routes/referrals'));
