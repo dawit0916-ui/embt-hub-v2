@@ -2,7 +2,7 @@ const { Markup } = require('telegraf');
 const bot = require('./bot');
 const taskState = require('./config');
 const { admins, PUBLIC_GROUP_ID, STORAGE_CHANNEL_ID } = require('../config/constants');
-const { User, CompletedTask, UserReminder, ShopProduct, CourseLesson, LevelConfig } = require('../models');
+const { User, CompletedTask, UserReminder, ShopProduct, CourseLesson } = require('../models');
 const { logAdminAction } = require('../utils/logAdminAction');
 
 // Track admin sessions for multi-step video/APK upload workflow
