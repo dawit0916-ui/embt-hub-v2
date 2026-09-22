@@ -4,7 +4,7 @@ const router = express.Router();
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
-const { Task, User, LevelConfig, ReferralEarning, DailyTaskProgress } = require('../models');
+const { Task, User, ReferralEarning, DailyTaskProgress } = require('../models');
 const { getSettings } = require('../utils/settings');
 const { logAdminAction } = require('../utils/logAdminAction');
 const { getNextResetTime } = require('../utils/time');
@@ -133,20 +133,9 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
             }
         );
 
-        // 6. Referral commission — use the REFERRER's own level commission rate
-        // instead of one flat global rate, so buying levels actually raises
-        // your commission the way the level detail drawer promises.
+        // 6. Referral commission — flat rate for everyone
         if (user.referred_by) {
-    const referrer = await User.findOne({ user_id: user.referred_by }).select('level');
-    let commissionPercent = settings.ref_commission_percent || 10; // fallback: no level yet / config missing
-
-    if (referrer && referrer.level > 0) {
-        const referrerLevelConfig = await LevelConfig.findOne({ level: referrer.level });
-        if (referrerLevelConfig && typeof referrerLevelConfig.commission_percent === 'number') {
-            commissionPercent = referrerLevelConfig.commission_percent;
-        }
-    }
-
+    const commissionPercent = settings.ref_commission_percent || 10;
     const commission = task.reward * (commissionPercent / 100);
     await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
     await ReferralEarning.updateOne(
