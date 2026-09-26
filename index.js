@@ -58,7 +58,6 @@ app.use('/', require('./routes/shop'));
 // them all in one top-to-bottom executed file.
 // ==========================================================================
 const bot = require('./bot/bot');
-require('./bot/config');
 require('./bot/handlers');
 require('./bot/dailyConfig');
 require('./bot/ghostValidator');
