@@ -60,7 +60,13 @@ bot.start(async (ctx) => {
 
         const sentMsg = await ctx.reply(
             `👋 Welcome to Dash Earn!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
-            { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[markup.button.webapp('📱 open mini app', mini_app_url)],[markup.button.webapp('📱 open minii app', mini_app_urls)]]) }
+             {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+            [Markup.button.webApp('📱 Open Mini App', mini_app_url)],
+            [Markup.button.webApp('📱 Open Mini App 2', mini_app_urls)]
+        ])
+    }
         );
 
         // Track both message IDs for cleanup
