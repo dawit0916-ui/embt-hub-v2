@@ -59,7 +59,6 @@ app.use('/', require('./routes/shop'));
 // ==========================================================================
 const bot = require('./bot/bot');
 require('./bot/handlers');
-require('./bot/dailyConfig');
 require('./bot/ghostValidator');
 require('./bot/reminders');
 require('./bot/adWatchCleanup');
