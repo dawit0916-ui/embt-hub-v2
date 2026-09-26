@@ -35,7 +35,9 @@ bot.start(async (ctx) => {
     const currentUsername = ctx.from.username || null;
     const currentFirstName = ctx.from.first_name || null;
     const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app';
+    const MINI_APP_URLs = 'https://mini-app-ui-embta.vercel.app/feedback';
 
+    
     try {
         let user = await User.findOne({ user_id: userId });
 
@@ -58,7 +60,7 @@ bot.start(async (ctx) => {
 
         const sentMsg = await ctx.reply(
             `👋 Welcome to Dash Earn!\n\nYour profile is fully synced. Tap the button below to open the app and start earning!`,
-            { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]]) }
+            { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[markup.button.webapp('📱 open mini app', mini_app_url)],[markup.button.webapp('📱 open minii app', mini_app_urls)]]) }
         );
 
         // Track both message IDs for cleanup
