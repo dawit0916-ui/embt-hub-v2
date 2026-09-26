@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { Feedback } = require('../models');
 const validateAdmin = require('../middleware/validateAdmin');
-const logAdminAction = require('../utils/logAdminAction');
+const { logAdminAction } = require('../utils/logAdminAction');
 
 // GET /api/admin/feedback?status=new&type=bug&page=1
 router.get('/', validateAdmin, async (req, res) => {
@@ -41,7 +41,7 @@ router.patch('/:id', validateAdmin, async (req, res) => {
     );
     if (!updated) return res.status(404).json({ success: false, error: 'Not found' });
 
-    logAdminAction(req.tgUser?.id, `Marked feedback ${req.params.id} as ${status}`);
+    await logAdminAction(req.adminUser, 'feedback_status_updated', `Marked feedback ${req.params.id} as ${status}`);
     res.json({ success: true, feedback: updated });
   } catch (err) {
     console.error('Admin feedback update error:', err);
@@ -55,7 +55,7 @@ router.delete('/:id', validateAdmin, async (req, res) => {
     const deleted = await Feedback.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ success: false, error: 'Not found' });
 
-    logAdminAction(req.tgUser?.id, `Deleted feedback ${req.params.id}`);
+    await logAdminAction(req.adminUser, 'feedback_deleted', `Deleted feedback ${req.params.id}`);
     res.json({ success: true });
   } catch (err) {
     console.error('Admin feedback delete error:', err);
