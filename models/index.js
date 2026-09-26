@@ -15,7 +15,7 @@ const YoutubeTask = require('./youtubeTask');
 const TelegramVerification = require('./telegramVerification');
 const ReminderConfig = require('./reminderConfig');
 const UserReminder = require('./userReminder');
-
+const Feedback = require('./feedback');
 const FeatureUsageLog = require('./featureUsageLog');
 
 const CompletedTask = require('./completedTask');
@@ -45,7 +45,7 @@ module.exports = {
     TelegramVerification,
     ReminderConfig,
     UserReminder,
-    
+    Feedback,
     FeatureUsageLog,
     
     CompletedTask,
