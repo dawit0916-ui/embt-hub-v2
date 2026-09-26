@@ -35,7 +35,7 @@ bot.start(async (ctx) => {
     const currentUsername = ctx.from.username || null;
     const currentFirstName = ctx.from.first_name || null;
     const MINI_APP_URL = 'https://mini-app-ui-embta.vercel.app';
-    const MINI_APP_URLs = 'https://mini-app-ui-embta.vercel.app/feedback';
+    const MINI_APP_URLs = 'https://mini-app-ui-embta.vercel.app/feedback.html';
 
     
     try {
