@@ -63,8 +63,8 @@ bot.start(async (ctx) => {
              {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
-            [Markup.button.webApp('📱 Open Mini App', mini_app_url)],
-            [Markup.button.webApp('📱 Open Mini App 2', mini_app_urls)]
+            [Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)],
+            [Markup.button.webApp('📱 Open Mini App 2', MINI_APP_URLs)]
         ])
     }
         );
