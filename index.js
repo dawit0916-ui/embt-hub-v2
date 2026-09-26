@@ -38,6 +38,8 @@ app.use('/', require('./routes/adminUsers'));
 app.use('/', require('./routes/proofs'));
 app.use('/api/marketplace', require('./routes/marketplace')); 
 app.use('/api/admin/marketplace', require('./routes/adminMarketplace'));
+app.use('/api/feedback', require('./routes/feedback'));
+app.use('/api/admin/feedback', require('./routes/adminFeedback'));
 app.use('/', require('./routes/ads'));
 app.use('/', require('./routes/streak'));
 app.use('/', require('./routes/support'));
