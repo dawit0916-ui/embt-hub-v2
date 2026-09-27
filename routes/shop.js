@@ -163,7 +163,7 @@ router.post('/api/secure/purchase-course', validateInitData, async (req, res) =>
     }
 });
 
-// Download purchased APK
+// Download purchased APK — forwarded via Telegram chat (bypasses 20MB getFile limit)
 router.get('/api/download-apk', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
@@ -183,48 +183,22 @@ router.get('/api/download-apk', validateInitData, async (req, res) => {
             return res.status(404).json({ error: 'APK not available' });
         }
 
-        let filePath;
         try {
-            const fileInfo = await bot.telegram.getFile(product.telegram_file_id);
-            filePath = fileInfo.file_path;
+            await bot.telegram.sendDocument(userId, product.telegram_file_id, {
+                caption: `📦 ${product.title}`
+            });
         } catch (err) {
-            console.error('[APK getFile Error]:', err);
-            return res.status(500).json({ error: 'Unable to retrieve APK' });
+            console.error('[APK sendDocument Error]:', err.message);
+            return res.status(500).json({ error: 'Failed to send APK — please make sure you have started a chat with the bot' });
         }
 
-        const telegramDownloadUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${filePath}`;
-
-        const axios = require('axios');
-        try {
-            const response = await axios.get(telegramDownloadUrl, {
-                responseType: 'stream',
-                timeout: 30000
-            });
-
-            res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-            res.setHeader('Content-Disposition', `attachment; filename="${product.fileName || 'app.apk'}"`);
-            if (response.headers['content-length']) {
-                res.setHeader('Content-Length', response.headers['content-length']);
-            }
-
-            response.data.pipe(res);
-
-            response.data.on('error', (err) => {
-                console.error('[APK Stream Error]:', err.message);
-                if (!res.headersSent) res.status(500).json({ error: 'Stream interrupted' });
-            });
-
-        } catch (err) {
-            console.error('[APK Download Error]:', err.message);
-            if (!res.headersSent) return res.status(500).json({ error: 'Failed to download APK' });
-        }
+        res.json({ success: true, message: 'APK sent to your Telegram chat' });
 
     } catch (err) {
         console.error('[APK Route Error]:', err);
         if (!res.headersSent) return res.status(500).json({ error: 'Server error' });
     }
 });
-
 // =====================================================
 // ADMIN SHOP ROUTES
 // =====================================================
