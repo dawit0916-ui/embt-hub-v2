@@ -54,8 +54,13 @@ router.post('/api/secure/ads/start-session', validateInitData, async (req, res) 
         res.status(500).json({ error: 'Server error' });
     }
 });
-const REQUIRED_CLICKS = 1;   // raise to require more clicks
-const MAX_CLICK_FAILS = 3;   // tries before the session is voided
+const CLICK_RATIO = 1;       // 1 = click every ad served; 0.5 = half, rounded up
+const MAX_REQUIRED = 3;      // never demand more than this
+const MAX_CLICK_FAILS = 3;
+const ENFORCE_CLICKS = true; // false = log only, nobody blocked
+const requiredClicksFor = (shown) =>
+    Math.min(MAX_REQUIRED, Math.max(1, Math.ceil(shown * CLICK_RATIO)));
+
 router.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
       try {
         const userId = req.tgUser.id;
@@ -71,10 +76,14 @@ router.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
 
         // Click gate: use tracker counts; fall back to blurDetected for old cached clients
         const clicked = Number(adsClicked);
+        const shown = Number(adsShown) || 0;
         const hasCounts = Number.isFinite(clicked);
-        const clickOk = hasCounts ? clicked >= REQUIRED_CLICKS : !!blurDetected;
+        const required = requiredClicksFor(shown);
+        const clickOk = !ENFORCE_CLICKS || (hasCounts ? clicked >= required : !!blurDetected);
 
-        session.shown = Number(adsShown) || 0;
+        console.log('[ads/claim]', { userId, sessionId, shown, clicked: hasCounts ? clicked : null, required, clickOk });
+
+        session.shown = shown;
         session.clicked = hasCounts ? clicked : 0;
 
         if (!clickOk) {
@@ -84,8 +93,9 @@ router.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
             return res.status(400).json({
                 success: false,
                 code: 'NOT_ENOUGH_CLICKS',
+                shown,
                 clicked: session.clicked,
-                required: REQUIRED_CLICKS,
+                required,
                 attemptsLeft: Math.max(0, MAX_CLICK_FAILS - session.clickFails),
                 error: 'You Must Click The Button in AD.'
             });
