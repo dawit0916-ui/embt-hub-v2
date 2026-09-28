@@ -54,35 +54,47 @@ router.post('/api/secure/ads/start-session', validateInitData, async (req, res) 
         res.status(500).json({ error: 'Server error' });
     }
 });
-
+const REQUIRED_CLICKS = 1;   // raise to require more clicks
+const MAX_CLICK_FAILS = 3;   // tries before the session is voided
 router.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
-    try {
+      try {
         const userId = req.tgUser.id;
-        const { sessionId, blurDetected } = req.body;
-
+        const { sessionId, blurDetected, adsClicked, adsShown } = req.body;
         if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
 
         const session = await AdWatch.findOne({
-            sessionId,
-            userId,
-            claimed: false
+            sessionId, userId, claimed: false, voided: { $ne: true }
         });
-
         if (!session) {
             return res.status(404).json({ error: 'Session not found or already claimed' });
         }
-        // ✅ NEW: Require blur detection (CTA engagement proof)
-        if (!blurDetected) {
+
+        // Click gate: use tracker counts; fall back to blurDetected for old cached clients
+        const clicked = Number(adsClicked);
+        const hasCounts = Number.isFinite(clicked);
+        const clickOk = hasCounts ? clicked >= REQUIRED_CLICKS : !!blurDetected;
+
+        session.shown = Number(adsShown) || 0;
+        session.clicked = hasCounts ? clicked : 0;
+
+        if (!clickOk) {
+            session.clickFails = (session.clickFails || 0) + 1;
+            if (session.clickFails >= MAX_CLICK_FAILS) session.voided = true;
+            await session.save();
             return res.status(400).json({
-                error: 'You Must Click The Button in AD.',
-                pending: false
+                success: false,
+                code: 'NOT_ENOUGH_CLICKS',
+                clicked: session.clicked,
+                required: REQUIRED_CLICKS,
+                attemptsLeft: Math.max(0, MAX_CLICK_FAILS - session.clickFails),
+                error: 'You Must Click The Button in AD.'
             });
         }
+        await session.save();
+
         if (!session.serverConfirmed) {
-            // S2S ping hasn't arrived yet — tell frontend to retry
             return res.status(202).json({
-                success: false,
-                pending: true,
+                success: false, pending: true,
                 error: 'Ad reward not yet confirmed by server. Please wait a moment.'
             });
         }
