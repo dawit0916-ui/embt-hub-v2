@@ -32,7 +32,7 @@ router.get('/api/adsgram/reward-callback', async (req, res) => {
         session.serverConfirmed = true;
         await session.save();
 
-        console.log(`[AdsGram S2S] Confirmed session ${sessionId} for user ${userId}`);
+      console.log(`[AdsGram S2S] Confirmed session ${session.sessionId} for user ${userId}`);
         return res.status(200).send('ok');
 
     } catch (err) {
