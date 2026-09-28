@@ -13,7 +13,11 @@ const AdWatch = mongoose.model('AdWatch', new mongoose.Schema({
     clientDone:      { type: Boolean, default: false }, // set by browser
     claimed:         { type: Boolean, default: false },
     blurDetected: { type: Boolean, default: false }, // audit only
-    createdAt:       { type: Date, default: Date.now }
+    createdAt:       { type: Date, default: Date.now },
+    shown:      { type: Number, default: 0 },
+    clicked:    { type: Number, default: 0 },
+    clickFails: { type: Number, default: 0 },
+    voided:     { type: Boolean, default: false }
     // NOTE: this used to auto-delete after 10 minutes via a TTL index
     // (`expires: 600`). That was meant to clean up abandoned/incomplete
     // sessions, but this same collection is also how watchesPerReset gets
