@@ -101,14 +101,20 @@ bot.action('start_bot_reminder', async (ctx) => {
             { $set: { welcome_message_deleted: false } }
         );
 
-       const openedMsg = await ctx.reply(
-            `👋 Welcome back to Dash Earn!\n\nTap below to continue earning:`,
+       const sentMsg = await ctx.reply(
+            `👋 Welcome to Dash Earn!\n\nYour profile is fully synced. Tap below to open the app and start earning!`,
             {
                 parse_mode: 'Markdown',
-                ...Markup.inlineKeyboard([[Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)]])
+                ...Markup.inlineKeyboard([
+                    [Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)],
+                    [
+                        Markup.button.webApp('📦 Shop / APK', `${MINI_APP_URL}/?section=shop`),
+                        Markup.button.webApp('🆘 Support', `${MINI_APP_URL}/?section=support`)
+                    ],
+                    [Markup.button.webApp('💬 Feedback', `${MINI_APP_URL}/feedback.html`)]
+                ])
             }
         );
-
         // ⚠️ Safer: Only push the reply message ID
         await User.updateOne(
             { user_id: userId },
@@ -188,6 +194,7 @@ bot.on('text', async (ctx, next) => {
         // ===== APK WIZARD =====
         if (session.type === 'apk') {
             switch (session.step) {
+                    fileUniqueId: doc.file_unique_id,
                 case 'awaiting_title':
                     session.data.title = input;
                     session.step = 'awaiting_description';
@@ -219,6 +226,7 @@ bot.on('text', async (ctx, next) => {
                         title: session.data.title,
                         description: session.data.description,
                         price: session.data.price,
+                        fileUniqueId: session.fileUniqueId,
                         category: session.data.category,
                         type: 'apk',
                         telegram_file_id: session.fileId,
