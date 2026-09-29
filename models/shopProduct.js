@@ -1,4 +1,4 @@
-toconst mongoose = require('mongoose');
+const mongoose = require('mongoose');
 
 // =====================================================
 // SHOP SYSTEM - MODELS
