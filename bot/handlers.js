@@ -194,7 +194,6 @@ bot.on('text', async (ctx, next) => {
         // ===== APK WIZARD =====
         if (session.type === 'apk') {
             switch (session.step) {
-                    fileUniqueId: doc.file_unique_id,
                 case 'awaiting_title':
                     session.data.title = input;
                     session.step = 'awaiting_description';
@@ -366,6 +365,7 @@ bot.on('document', async (ctx) => {
             fileId: fileId,
             fileName: fileName,
             fileSize: fileSize,
+            fileUniqueId: doc.file_unique_id,
             type: 'apk',
             step: 'awaiting_title',
             data: {},
