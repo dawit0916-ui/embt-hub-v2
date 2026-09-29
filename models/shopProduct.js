@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+toconst mongoose = require('mongoose');
 
 // =====================================================
 // SHOP SYSTEM - MODELS
@@ -19,10 +19,14 @@ const ShopProduct = mongoose.model('ShopProduct', new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
 
-    // Added for APK products
-    telegram_file_id: { type: String, default: null }, // needed to deliver the APK on purchase
+    // APK products
+    telegram_file_id: { type: String, default: null },
+    fileUniqueId: { type: String, default: null },
     fileName: { type: String, default: null },
-    fileSize: { type: String, default: null }
+    fileSize: { type: String, default: null },
+    version: { type: String, default: '' },
+    changelog: { type: String, default: '' },
+    downloadCount: { type: Number, default: 0 }
 }));
 
 module.exports = ShopProduct;
