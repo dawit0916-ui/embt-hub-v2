@@ -163,40 +163,63 @@ router.post('/api/secure/purchase-course', validateInitData, async (req, res) =>
     }
 });
 
-// Download purchased APK — forwarded via Telegram chat (bypasses 20MB getFile limit)
+const apkCooldown = new Map(); // `${userId}:${productId}` -> timestamp
+
 router.get('/api/download-apk', validateInitData, async (req, res) => {
     try {
-        const userId = req.tgUser.id;
+        const userId = Number(req.tgUser.id);
         const { productId } = req.query;
-
-        if (!productId) {
-            return res.status(400).json({ error: 'productId required' });
-        }
+        if (!productId) return res.status(400).json({ error: 'productId required' });
 
         const purchase = await UserPurchase.findOne({ userId, productId, status: 'active' });
-        if (!purchase) {
-            return res.status(403).json({ error: 'You do not own this product' });
+        if (!purchase) return res.status(403).json({ error: 'You do not own this product' });
+        if (purchase.accessExpiresAt && purchase.accessExpiresAt < new Date()) {
+            return res.status(403).json({ error: 'Your access has expired' });
         }
 
         const product = await ShopProduct.findById(productId);
-        if (!product || product.type !== 'apk' || !product.telegram_file_id) {
+        if (!product || product.type !== 'apk' || !product.active || !product.telegram_file_id) {
             return res.status(404).json({ error: 'APK not available' });
         }
 
-        try {
-            await bot.telegram.sendDocument(userId, product.telegram_file_id, {
-                caption: `📦 ${product.title}`
-            });
-        } catch (err) {
-            console.error('[APK sendDocument Error]:', err.message);
-            return res.status(500).json({ error: 'Failed to send APK — please make sure you have started a chat with the bot' });
+        // 30s cooldown to stop spam-resending
+        const key = `${userId}:${productId}`;
+        const last = apkCooldown.get(key) || 0;
+        if (Date.now() - last < 30000) {
+            return res.status(429).json({ error: 'Please wait a few seconds before requesting again', code: 'cooldown' });
         }
 
-        res.json({ success: true, message: 'APK sent to your Telegram chat' });
+        const captionLines = [
+            `📦 ${product.title}${product.version ? ' v' + product.version : ''}`,
+            product.fileSize ? `💾 ${product.fileSize}` : null,
+            product.changelog ? `\n📝 ${product.changelog}` : null,
+            '\nOpen the file above to install.'
+        ].filter(Boolean);
 
+        try {
+            await bot.telegram.sendDocument(userId, product.telegram_file_id, {
+                caption: captionLines.join('\n').slice(0, 1024)
+            });
+        } catch (err) {
+            const code = err?.response?.error_code;
+            const desc = err?.response?.description || err.message;
+            console.error('[APK sendDocument Error]:', code, desc);
+            if (code === 403 || /chat not found/i.test(desc)) {
+                return res.status(409).json({
+                    error: 'Start the bot first, then tap download again',
+                    code: 'bot_not_started'
+                });
+            }
+            return res.status(500).json({ error: 'Failed to send APK, try again later', code: 'send_failed' });
+        }
+
+        apkCooldown.set(key, Date.now());
+        ShopProduct.updateOne({ _id: product._id }, { $inc: { downloadCount: 1 } }).catch(() => {});
+
+        res.json({ success: true, message: 'APK sent to your Telegram chat' });
     } catch (err) {
         console.error('[APK Route Error]:', err);
-        if (!res.headersSent) return res.status(500).json({ error: 'Server error' });
+        if (!res.headersSent) res.status(500).json({ error: 'Server error' });
     }
 });
 // =====================================================
