@@ -119,8 +119,9 @@ router.post('/api/secure/purchase-course', validateInitData, async (req, res) =>
         // 5. Check balance (against the discounted price)
         if (user.balance < finalPrice) {
             return res.status(400).json({
-                error: `Insufficient DASH. You need ${finalPrice} but have ${user.balance}`
-            });
+              success: false,
+              error: `Insufficient DASH. You need ${finalPrice} but have ${user.balance}`
+             });
         }
 
         // 6. Deduct price + create purchase record
