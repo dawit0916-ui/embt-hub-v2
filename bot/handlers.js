@@ -56,20 +56,28 @@ bot.start(async (ctx) => {
             );
         }
 
-        const sentMsg = await ctx.reply(
-            `👋 Welcome to Dash Earn!\n\nYour profile is fully synced. Tap below to open the app and start earning!`,
-            {
-                parse_mode: 'Markdown',
-                ...Markup.inlineKeyboard([
-                    [Markup.button.webApp('📱 Open Mini App', MINI_APP_URL)],
-                    [
-                        Markup.button.webApp('📦 Shop / APK', `${MINI_APP_URL}/?section=shop`),
-                        Markup.button.webApp('🆘 Support', `${MINI_APP_URL}/?section=support`)
-                    ],
-                    [Markup.button.webApp('💬 Feedback', `${MINI_APP_URL}/feedback.html`)]
-                ])
-            }
-        );
+        const btn = (label, url, style) => ({
+    ...Markup.button.webApp(label, url),
+    ...(style && { style }) // 'primary' (blue), 'success' (green), 'danger' (red)
+});
+
+const sentMsg = await ctx.reply(
+    `🟢 <b>Welcome to Dash Earn!</b> ⚡\n\n` +
+    `✅ Your profile is fully synced.\n` +
+    `💎 Tap below to open the app and start earning <b>DASH</b>!\n\n` +
+    `<blockquote>🔵 Complete tasks  •  🟡 Earn rewards  •  🟣 Shop courses/apks</blockquote>`,
+    {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+            [btn('🟢 Open Mini App', MINI_APP_URL, 'success')],
+            [
+                btn('📦 Shop / APK', `${MINI_APP_URL}/?section=shop`, 'primary'),
+                btn('🆘 Support', `${MINI_APP_URL}/?section=support`, 'danger')
+            ],
+            [btn('💬 Feedback', `${MINI_APP_URL}/feedback.html`, 'primary')]
+        ])
+    }
+);
         // Track both message IDs for cleanup
         await User.updateOne(
             { user_id: userId },
@@ -83,9 +91,9 @@ bot.start(async (ctx) => {
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
-const WEBAPP_URL = 'https://mini-app-ui-embta.vercel.app';
+const WEBAPP_URL = 'https://mini-app-ui-embta.vercel.app/feedback.html';
 bot.telegram.setChatMenuButton({
-  menuButton: { type: 'web_app', text: 'Open', web_app: { url: WEBAPP_URL } },
+  menuButton: { type: 'web_app', text: '💬 Feedback', web_app: { url: WEBAPP_URL } },
 }).catch(console.error);
 
 // Inline button handler for reminder start button
