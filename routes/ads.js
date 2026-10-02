@@ -284,14 +284,6 @@ router.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
 });
 */
 
-// ==========================================================================
-// FAST TASK (AdsGram task-widget) — available to all users regardless of
-// level. 3 claims/day, 100 DASH each. No admin config UI on purpose — the
-// block ID is a fixed env var (config/constants.js) and the reward/limit
-// are fixed constants below. Uses CompletedTask (not AdWatch) for daily
-// tracking since AdWatch auto-deletes after 10 minutes (fine for its
-// original short-lived session flow, wrong for a full-day claim limit).
-// ==========================================================================
 const FAST_TASK_DAILY_LIMIT = 3;
 const FAST_TASK_REWARD = 100;
 
@@ -301,7 +293,7 @@ function fastTaskDateKey() {
 
 router.get('/api/secure/fast-task-config', validateInitData, async (req, res) => {
     try {
-        const user = await User.findOne({ user_id: req.tgUser.id }).select('level');
+        const user = await User.findOne({ user_id: req.tgUser.id }).select('_id');
         if (!user) return res.status(404).json({ success: false, error: 'User not found' });
 
         const dateKey = fastTaskDateKey();
