@@ -32,15 +32,26 @@ router.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
 
         const task = await Task.findOne({ id: taskId, enabled: true });
         if (!task) return res.status(404).json({ error: "Task not found." });
+        if (task.type !== 'manual') return res.status(400).json({ error: "This task doesn't take proof." });
+        if (task.max_users && task.completions >= task.max_users) return res.status(400).json({ error: "This task is full." });
 
         const user = await User.findOne({ user_id: userId });
         if (!user) return res.status(404).json({ error: "User not found." });
-        if (user.completed_tasks.includes(taskId)) {
-            return res.status(400).json({ error: "Task already submitted." });
+        if (user.is_banned) return res.status(403).json({ error: "Account is banned." });
+        if (user.completed_tasks.includes(taskId)) return res.status(400).json({ error: "Task already completed." });
+
+        if (await ProofSubmission.exists({ userId, taskId, status: 'pending' })) {
+            return res.status(400).json({ error: "You already have a proof waiting for review." });
         }
 
+        const text = typeof proof === 'string' ? proof.trim().slice(0, 1000) : '';
+        const hasShot = typeof screenshot === 'string' && screenshot.startsWith('data:image/');
+        if (!text && !hasShot) return res.status(400).json({ error: "Add your proof first." });
+        if (task.proof_type === 'text' && !text) return res.status(400).json({ error: "This task needs a text proof." });
+        if (task.proof_type === 'screenshot' && !hasShot) return res.status(400).json({ error: "This task needs a screenshot." });
+
         const proofId = 'PRF-' + crypto.randomBytes(4).toString('hex').toUpperCase();
-        const proofType = screenshot ? 'screenshot' : 'text';
+        const proofType = hasShot ? 'screenshot' : 'text';
         let telegramFileId = null;
         let channelMessageId = null;
 
@@ -49,17 +60,17 @@ router.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
             `🆔 REF: \`${proofId}\`\n` +
             `👤 User: \`${userId}\`${user.username ? ' @' + user.username : ''}\n` +
             `📝 Task: ${task.title}\n` +
-            `💰 Reward: ${task.reward} USDT\n` +
+            `💰 Reward: ${task.reward} DASH\n` +
             `📅 ${new Date().toLocaleString()}`;
 
-        if (screenshot) {
+        if (hasShot) {
             const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
             const buffer = Buffer.from(base64Data, 'base64');
             const result = await postPhotoToChannel(buffer, captionHeader);
             telegramFileId = result.fileId;
             channelMessageId = result.messageId;
         } else {
-            const fullMsg = `${captionHeader}\n\n📄 *Proof:*\n\`\`\`${proof || 'No text'}\`\`\``;
+            const fullMsg = `${captionHeader}\n\n📄 *Proof:*\n\`\`\`${text || 'No text'}\`\`\``;
             channelMessageId = await postToChannel(fullMsg);
         }
 
@@ -121,6 +132,7 @@ router.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
         if (!proof) return res.status(404).json({ error: 'Proof not found or already reviewed.' });
 
         if (action === 'approve') {
+            await Task.updateOne({ id: proof.taskId }, { $inc: { completions: 1 } });
             await User.updateOne({ user_id: proof.userId }, {
                 $inc: { balance: proof.reward, total_earned: proof.reward },
                 $push: {
@@ -130,7 +142,7 @@ router.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
             });
             try {
                 await bot.telegram.sendMessage(proof.userId,
-                    `✅ *Proof Approved!*\n\n📋 Task: ${proof.taskTitle}\n💰 +${proof.reward} USDT added\n🆔 REF: \`${proof.proofId}\``,
+                    `✅ *Proof Approved!*\n\n📋 Task: ${proof.taskTitle}\n💰 +${proof.reward} DASH added\n🆔 REF: \`${proof.proofId}\``,
                     { parse_mode: 'Markdown' }
                 );
             } catch (e) {}
