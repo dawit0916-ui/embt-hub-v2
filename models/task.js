@@ -9,8 +9,8 @@ const Task = mongoose.model('Task', new mongoose.Schema({
     category: String,
     url: String, 
     reward: Number, 
-    type: String,        // 'auto' | 'manual' | 'daily' | 'custom'
-    duration: String,    // null | 'weekly' | 'monthly' | 'three_month' — gates by level in claim-task
+    type: String,        
+    duration: String,    
     completions: { type: Number, default: 0 }, 
     max_users: Number,
     enabled: { type: Boolean, default: true }
