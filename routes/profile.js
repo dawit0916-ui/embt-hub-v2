@@ -51,7 +51,7 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 completed_tasks: user.completed_tasks || [],
                 is_banned: user.is_banned || false,
                 red_flag: user.red_flag || false,
-                tasks_added: user.tasks_added || 0,
+                
                 createdAt: user.createdAt,
                 isAdmin: typeof admins !== 'undefined' ? admins.includes(userId) : false,
 
@@ -77,7 +77,7 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 total_earned: 0,
                 referrals: 0,
                 tasksCompletedCount: 0,
-                tasks_added: 0,
+                
                 is_banned: false,
                 red_flag: false,
                 isAdmin: false,
