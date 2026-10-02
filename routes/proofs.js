@@ -194,6 +194,5 @@ router.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-});
 
 module.exports = router;
