@@ -18,7 +18,7 @@ router.get('/api/admin/directory', validateAdmin, async (req, res) => {
 
         // Pull documents matching your model schema properties
         const userDirectory = await User.find(databaseQuery)
-            .select('user_id username balance points is_banned')
+            .select('user_id username balance is_banned')
             .sort({ createdAt: -1 });
 
         // Map data properties clean to prevent front-end mapping crashes
@@ -26,8 +26,7 @@ router.get('/api/admin/directory', validateAdmin, async (req, res) => {
             user_id: user.user_id,
             username: user.username || null,
             balance: user.balance || 0,
-            points: user.points || 0.00,
-            coins: user.coins || 0.00,
+            
             is_banned: user.is_banned || false
         }));
 
@@ -140,8 +139,7 @@ router.post('/api/admin/user/update', validateAdmin, async (req, res) => {
             user: {
                 user_id: updatedUser.user_id,
                 balance: updatedUser.balance,
-                points: updatedUser.points,
-                coins: updatedUser.coins,
+                
                 is_banned: updatedUser.is_banned,
                 red_flag: updatedUser.red_flag
             }
