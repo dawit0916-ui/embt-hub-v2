@@ -4,42 +4,54 @@ const router = express.Router();
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
-const { Task, User, ReferralEarning, DailyTaskProgress } = require('../models');
+const crypto = require('crypto');
+const { Task, User, ReferralEarning, ProofSubmission } = require('../models');
 const { getSettings } = require('../utils/settings');
 const { logAdminAction } = require('../utils/logAdminAction');
-const { getNextResetTime } = require('../utils/time');
 
+function buildTaskFields(b, requireAll) {
+    const f = {};
+    if (b.title !== undefined) f.title = String(b.title).trim();
+    if (b.description !== undefined) f.description = String(b.description).trim();
+    if (b.image !== undefined) f.image = String(b.image);
+    if (b.category !== undefined) f.category = String(b.category);
+    if (b.url !== undefined) f.url = String(b.url).trim();
+    if (b.reward !== undefined) f.reward = Number(b.reward);
+    if (b.type !== undefined) f.type = b.type;
+    if (b.proof_type !== undefined) f.proof_type = b.proof_type;
+    if (b.max_users !== undefined) f.max_users = (b.max_users === null || b.max_users === '') ? null : Number(b.max_users);
+    if (b.enabled !== undefined) f.enabled = Boolean(b.enabled);
+
+    if (f.type !== undefined && !['auto', 'manual'].includes(f.type)) return { error: 'Task type must be auto or manual.' };
+    if (f.proof_type !== undefined && !['text', 'screenshot', 'either'].includes(f.proof_type)) return { error: 'Invalid proof type.' };
+    if (f.reward !== undefined && !(f.reward > 0)) return { error: 'Reward must be greater than 0.' };
+    if (f.max_users != null && !(Number.isInteger(f.max_users) && f.max_users > 0)) return { error: 'Max completions must be a whole number above 0.' };
+    // Auto tasks are verified through getChatMember, so they need a public t.me link
+    if (f.type === 'auto' && f.url !== undefined && !/^https:\/\/t\.me\/[A-Za-z0-9_]{4,}/.test(f.url)) {
+        return { error: 'Auto tasks need a public Telegram link like https://t.me/channelname (invite links with + cannot be verified).' };
+    }
+    if (requireAll && (!f.title || !f.url || f.reward === undefined)) return { error: 'Title, link and reward are required.' };
+    return { fields: f };
+        }
 router.get('/api/admin/tasks', validateAdmin, async (req, res) => res.json(await Task.find()));
 
 
 // Upgraded task route matching your exact frontend schema payload expectations
 router.post('/api/admin/tasks/add', validateAdmin, async (req, res) => {
     try {
-        const taskId = 't' + Math.floor(Math.random() * 10000);
+        const { fields, error } = buildTaskFields(req.body, true);
+        if (error) return res.status(400).json({ success: false, error });
 
-        // Maps your frontend data schema properties natively into MongoDB
-        const newTask = new Task({
-            ...req.body,
-            id: taskId
-        });
+        const taskId = 't' + crypto.randomBytes(4).toString('hex');
+        const newTask = await Task.create({ ...fields, id: taskId });
 
-        await newTask.save();
-        await logAdminAction(req.adminUser, 'task_added', `Added task: ${newTask.title}`);
-        return res.json({
-            success: true,
-            message: "Task successfully saved to database.",
-            taskId
-        });
-
+        await logAdminAction(req.adminUser, 'task_added', `Added ${newTask.type} task: ${newTask.title}`);
+        return res.json({ success: true, taskId });
     } catch (err) {
-        console.error("Task deployment transaction failure:", err);
-        return res.status(500).json({
-            success: false,
-            error: "Database failed to compile or save task properties payload."
-        });
+        console.error("Task deployment failure:", err);
+        return res.status(500).json({ success: false, error: "Failed to save task." });
     }
 });
-
 
 router.get('/api/secure/available-tasks', validateInitData, async (req, res) => {
     try {
@@ -78,60 +90,52 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
             return res.status(400).json({ error: "Task already claimed." });
         }
 
-        // 2. Fetch task
+        // 2. Fetch task (auto tasks only — manual tasks are paid on proof approval)
         const task = await Task.findOne({ id: taskId, enabled: true });
         if (!task) return res.status(404).json({ error: "Task not found." });
-        
-
-        // 3. ✅ TELEGRAM MEMBERSHIP VERIFICATION
-        if (task.type === 'auto' && task.url && task.url.includes('t.me/')) {
-    try {
-        const urlParts = task.url.split('t.me/')[1];
-        const channelUsername = urlParts.split('/')[0];
-
-        if (!channelUsername.startsWith('+')) {
-            const channelId = '@' + channelUsername;
-            const member = await bot.telegram.getChatMember(channelId, userId);
-            const validStatuses = ['member', 'administrator', 'creator'];
-            if (!validStatuses.includes(member.status)) {
-                return res.status(400).json({
-                    error: "You have not joined the channel yet. Please join first then claim."
-                });
-            }
+        if (task.type !== 'auto') {
+            return res.status(400).json({ error: "This task needs proof. Submit it from the task card." });
         }
-    } catch (verifyErr) {
-        console.error("Membership verification error:", verifyErr.message);
-        // FAIL CLOSED — block the claim instead of letting it through
-        return res.status(400).json({
-            error: "Could not verify channel membership. Please make sure you've joined and try again."
-        });
-    }
+
+        // 3. Telegram membership verification (fails closed)
+        const match = (task.url || '').match(/t\.me\/([A-Za-z0-9_]{4,})/);
+        if (!match) return res.status(400).json({ error: "This task can't be verified automatically." });
+        try {
+            const member = await bot.telegram.getChatMember('@' + match[1], userId);
+            if (!['member', 'administrator', 'creator'].includes(member.status)) {
+                return res.status(400).json({ error: "You have not joined the channel yet. Please join first then claim." });
             }
+        } catch (verifyErr) {
+            console.error("Membership verification error:", verifyErr.message);
+            return res.status(400).json({ error: "Could not verify channel membership. Please make sure you've joined and try again." });
+        }
+
+        // 3.5 Reserve a slot atomically (respects max_users)
+        const slot = await Task.findOneAndUpdate(
+            { id: taskId, enabled: true, $or: [{ max_users: null }, { $expr: { $lt: ['$completions', '$max_users'] } }] },
+            { $inc: { completions: 1 } }
+        );
+        if (!slot) return res.status(400).json({ error: "This task is full." });
+
         // 4. Get settings
         const settings = await getSettings();
 
-        // 5. Update user balance and history
+        // 5. Pay (guarded so a double-tap can't pay twice)
         const currentTasksDone = (user.referral_tasks_done || 0) + 1;
-
-        await User.updateOne(
-            { user_id: userId },
+        const paid = await User.updateOne(
+            { user_id: userId, completed_tasks: { $ne: taskId } },
             {
-                $inc: {
-                    balance: task.reward,
-                    referral_tasks_done: 1,
-                    total_earned: task.reward
-                },
+                $inc: { balance: task.reward, referral_tasks_done: 1, total_earned: task.reward },
                 $push: {
                     completed_tasks: taskId,
-                    history: {
-                        title: task.title,
-                        reward: task.reward,
-                        taskId: taskId,
-                        date: new Date()
-                    }
+                    history: { title: task.title, reward: task.reward, taskId: taskId, date: new Date() }
                 }
             }
         );
+        if (paid.modifiedCount === 0) {
+            await Task.updateOne({ id: taskId }, { $inc: { completions: -1 } });
+            return res.status(400).json({ error: "Task already claimed." });
+        }
 
         // 6. Referral commission — flat rate for everyone
         if (user.referred_by) {
@@ -202,38 +206,20 @@ router.delete('/api/admin/tasks/delete/:id', validateAdmin, async (req, res) => 
     }
 });
 
-// 3.5 Update task — previously missing entirely; a task could be created
-// or deleted but never edited, so fixing a typo meant delete + recreate.
 router.put('/api/admin/tasks/update/:id', validateAdmin, async (req, res) => {
     try {
-        const taskId = req.params.id;
-        const { title, description, image, category, url, reward, type, duration, max_users, enabled } = req.body;
-
-        let updates = {};
-        if (title !== undefined) updates.title = title;
-        if (description !== undefined) updates.description = description;
-        if (image !== undefined) updates.image = image;
-        if (category !== undefined) updates.category = category;
-        if (url !== undefined) updates.url = url;
-        if (reward !== undefined) updates.reward = Number(reward);
-        if (type !== undefined) updates.type = type;
-        if (duration !== undefined) updates.duration = duration;
-        if (max_users !== undefined) updates.max_users = Number(max_users);
-        if (enabled !== undefined) updates.enabled = Boolean(enabled);
+        const { fields, error } = buildTaskFields(req.body, false);
+        if (error) return res.status(400).json({ success: false, error });
 
         const updatedTask = await Task.findOneAndUpdate(
-            { id: taskId },
-            { $set: updates },
+            { id: req.params.id },
+            { $set: fields },
             { new: true }
         );
-
-        if (!updatedTask) {
-            return res.status(404).json({ error: "Task not found." });
-        }
+        if (!updatedTask) return res.status(404).json({ error: "Task not found." });
 
         await logAdminAction(req.adminUser, 'task_updated', `Updated task: ${updatedTask.title}`);
         return res.json({ success: true, task: updatedTask });
-
     } catch (err) {
         console.error("Update task error:", err);
         return res.status(500).json({ error: "Failed to update task." });
@@ -241,66 +227,29 @@ router.put('/api/admin/tasks/update/:id', validateAdmin, async (req, res) => {
 });
 
 
-// ==========================================================================
-// DAILY RESET TASKS ENDPOINTS
-// ==========================================================================
 
-
-// Get all tasks with daily progress
 router.get('/api/secure/tasks-with-progress', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
+        const user = await User.findOne({ user_id: userId }).select('completed_tasks');
+        const done = new Set(user?.completed_tasks || []);
 
-        const allTasks = await Task.find({ enabled: true });
+        const pendingDocs = await ProofSubmission.find({ userId, status: 'pending' }).select('taskId').lean();
+        const pending = new Set(pendingDocs.map(p => p.taskId));
 
-        const tasksWithProgress = await Promise.all(
-            allTasks.map(async (task) => {
-                if (task.type !== 'daily') {
-                    // One-time tasks
-                    const user = await User.findOne({ user_id: userId });
-                    const completed = user?.completed_tasks?.includes(task.id);
-                    return {
-                        ...task.toObject(),
-                        completed: !!completed,
-                        progress: completed ? 1 : 0,
-                        requirementCount: 1
-                    };
-                }
-
-                // Daily tasks - check if reset needed
-                let progress = await DailyTaskProgress.findOne({ userId, taskId: task.id });
-
-                if (!progress) {
-                    progress = await DailyTaskProgress.create({
-                        userId,
-                        taskId: task.id,
-                        resetAt: getNextResetTime('daily')
-                    });
-                }
-
-                const now = new Date();
-                if (now >= progress.resetAt) {
-                    // Reset this task
-                    progress.completedCount = 0;
-                    progress.claimedToday = false;
-                    progress.resetAt = getNextResetTime('daily');
-                    await progress.save();
-                }
-
-                return {
-                    ...task.toObject(),
-                    completed: progress.claimedToday,
-                    progress: Math.min(progress.completedCount, 1),
-                    requirementCount: 1,
-                    resetAt: progress.resetAt
-                };
-            })
-        );
-
-        return res.json({ success: true, tasks: tasksWithProgress });
+        const tasks = await Task.find({ enabled: true });
+        return res.json({
+            success: true,
+            tasks: tasks.map(t => ({
+                ...t.toObject(),
+                completed: done.has(t.id),
+                pending: pending.has(t.id),
+                full: !!t.max_users && t.completions >= t.max_users
+            }))
+        });
     } catch (err) {
-        console.error('Get tasks error:', err);
-        res.status(500).json({ error: 'Failed to load tasks' });
+        console.error("Tasks-with-progress error:", err);
+        return res.status(500).json({ error: "Failed to load tasks." });
     }
 });
 
