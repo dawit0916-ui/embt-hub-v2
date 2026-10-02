@@ -10,9 +10,7 @@ const Task = mongoose.model('Task', new mongoose.Schema({
     url: String, 
     reward: Number, 
     type: String,        
-    duration: String,    
     completions: { type: Number, default: 0 }, 
-    max_users: Number,
     enabled: { type: Boolean, default: true }
 }));
 
