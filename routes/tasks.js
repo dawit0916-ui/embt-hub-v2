@@ -5,8 +5,8 @@ const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
 const crypto = require('crypto');
-const { Task, User, ReferralEarning, ProofSubmission } = require('../models');
-const { getSettings } = require('../utils/settings');
+const { Task, User, ProofSubmission } = require('../models');
+const { payReferral } = require('../utils/referral');
 const { logAdminAction } = require('../utils/logAdminAction');
 
 function buildTaskFields(b, requireAll) {
@@ -118,14 +118,11 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         if (!slot) return res.status(400).json({ error: "This task is full." });
 
         // 4. Get settings
-        const settings = await getSettings();
-
-        // 5. Pay (guarded so a double-tap can't pay twice)
-        const currentTasksDone = (user.referral_tasks_done || 0) + 1;
+        // 4. Pay (guarded so a double-tap can't pay twice)
         const paid = await User.updateOne(
             { user_id: userId, completed_tasks: { $ne: taskId } },
             {
-                $inc: { balance: task.reward, referral_tasks_done: 1, total_earned: task.reward },
+                $inc: { balance: task.reward, total_earned: task.reward },
                 $push: {
                     completed_tasks: taskId,
                     history: { title: task.title, reward: task.reward, taskId: taskId, date: new Date() }
@@ -137,50 +134,8 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
             return res.status(400).json({ error: "Task already claimed." });
         }
 
-        // 6. Referral commission — flat rate for everyone
-        if (user.referred_by) {
-    const commissionPercent = settings.ref_commission_percent || 10;
-    const commission = task.reward * (commissionPercent / 100);
-    await User.updateOne({ user_id: user.referred_by }, { $inc: { balance: commission } });
-    await ReferralEarning.updateOne(
-        { referrerId: user.referred_by, friendId: userId },
-        { $inc: { totalEarned: commission }, $set: { lastEarnedAt: new Date() } },
-        { upsert: true }
-    );
-}
-
-        // 7. Referral milestone bonus
-        const requiredReferralTasks = settings.ref_tasks_required || 3;
-        if (user.referred_by && !user.referral_paid && currentTasksDone >= requiredReferralTasks) {
-            const updateReferrer = await User.updateOne(
-                { user_id: userId, referral_paid: { $ne: true } },
-                { $set: { referral_paid: true } }
-            );
-            if (updateReferrer.modifiedCount > 0) {
-                await User.updateOne(
-                    { user_id: user.referred_by },
-                    { $inc: { balance: settings.ref_bonus_amount } }
-                );
-                try {
-                    await bot.telegram.sendMessage(
-                        user.referred_by,
-                        `🎊 *Invite Bonus:* Your friend completed 3 tasks! You earned ${settings.ref_bonus_amount} DASH.\n Also your Commission Unlocked with this friend. \n you Earn percent set from this user earnings now.`,
-                        { parse_mode: 'Markdown' }
-                    );
-                } catch (botErr) {
-                    console.error("Bot notification error:", botErr.message);
-                }
-            }
-        }
-
-        // 8. Return updated balance
-        const updatedUser = await User.findOne({ user_id: userId });
-        return res.json({
-            success: true,
-            reward: task.reward,
-            newBalance: updatedUser.balance
-        });
-
+        // 5. Referral: commission + milestone bonus
+        await payReferral(userId, task.reward, { countsAsTask: true });
     } catch (err) {
         console.error("Claim task error:", err);
         return res.status(500).json({ error: "Internal server error." });
