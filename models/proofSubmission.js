@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
-
+// ADD at the top
+const crypto = require('crypto');
 
 const ProofSubmission = mongoose.model('ProofSubmission', new mongoose.Schema({
     proofId: { type: String, unique: true, default: () => 'PRF-' + crypto.randomBytes(4).toString('hex').toUpperCase() },
