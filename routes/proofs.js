@@ -6,6 +6,7 @@ const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
 const { Task, User, ProofSubmission } = require('../models');
+const { payReferral } = require('../utils/referral');
 const { postToChannel, postPhotoToChannel, replyInChannel } = require('../utils/channel');
 const { logAdminAction } = require('../utils/logAdminAction');
 const { runGhostValidator } = require('../bot/ghostValidator');
@@ -128,18 +129,42 @@ router.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
             return res.status(400).json({ error: 'Invalid action.' });
         }
 
-        const proof = await ProofSubmission.findOne({ proofId, status: 'pending' });
+        // Claim the review atomically: a second tap finds nothing pending, so it can't pay twice
+        const proof = await ProofSubmission.findOneAndUpdate(
+            { proofId, status: 'pending' },
+            { $set: { status: action === 'approve' ? 'approved' : 'rejected', reviewedAt: new Date() } }
+        );
         if (!proof) return res.status(404).json({ error: 'Proof not found or already reviewed.' });
 
         if (action === 'approve') {
-            await Task.updateOne({ id: proof.taskId }, { $inc: { completions: 1 } });
-            await User.updateOne({ user_id: proof.userId }, {
-                $inc: { balance: proof.reward, total_earned: proof.reward },
-                $push: {
-                    completed_tasks: proof.taskId,
-                    history: { title: proof.taskTitle, reward: proof.reward, taskId: proof.taskId, date: new Date() }
+            // Reserve a slot (respects max_users). A deleted task needs no slot.
+            const slot = await Task.findOneAndUpdate(
+                { id: proof.taskId, $or: [{ max_users: null }, { $expr: { $lt: ['$completions', '$max_users'] } }] },
+                { $inc: { completions: 1 } }
+            );
+            if (!slot && await Task.exists({ id: proof.taskId })) {
+                await ProofSubmission.updateOne({ proofId }, { $set: { status: 'pending', reviewedAt: null } });
+                return res.status(400).json({ error: 'Task is full. Reject this proof instead.' });
+            }
+
+            const paid = await User.updateOne(
+                { user_id: proof.userId, completed_tasks: { $ne: proof.taskId } },
+                {
+                    $inc: { balance: proof.reward, total_earned: proof.reward },
+                    $push: {
+                        completed_tasks: proof.taskId,
+                        history: { title: proof.taskTitle, reward: proof.reward, taskId: proof.taskId, date: new Date() }
+                    }
                 }
-            });
+            );
+            if (paid.modifiedCount === 0) {
+                if (slot) await Task.updateOne({ id: proof.taskId }, { $inc: { completions: -1 } });
+                await ProofSubmission.updateOne({ proofId }, { $set: { status: 'rejected' } });
+                return res.status(400).json({ error: 'User already completed this task. Proof closed.' });
+            }
+
+            await payReferral(proof.userId, proof.reward, { countsAsTask: true });
+
             try {
                 await bot.telegram.sendMessage(proof.userId,
                     `✅ *Proof Approved!*\n\n📋 Task: ${proof.taskTitle}\n💰 +${proof.reward} DASH added\n🆔 REF: \`${proof.proofId}\``,
@@ -149,7 +174,7 @@ router.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
         } else {
             try {
                 await bot.telegram.sendMessage(proof.userId,
-                    `❌ *Proof Rejected*\n\n📋 Task: ${proof.taskTitle}\n🆔 REF: \`${proof.proofId}\`\n\nPlease resubmit with a clearer screenshot.`,
+                    `❌ *Proof Rejected*\n\n📋 Task: ${proof.taskTitle}\n🆔 REF: \`${proof.proofId}\`\n\nPlease resubmit with a clearer proof.`,
                     { parse_mode: 'Markdown' }
                 );
             } catch (e) {}
@@ -162,14 +187,13 @@ router.post('/api/admin/proof-action', validateAdmin, async (req, res) => {
             );
         }
 
-        await ProofSubmission.updateOne({ proofId }, { $set: { status: action === 'approve' ? 'approved' : 'rejected', reviewedAt: new Date() } });
         await logAdminAction(req.adminUser, action === 'approve' ? 'proof_approved' : 'proof_rejected', `Proof ${proofId} for user ${proof.userId}`);
-
         res.json({ success: true });
     } catch (e) {
         console.error('Proof action error:', e);
         res.status(500).json({ error: e.message });
     }
+});
 });
 
 module.exports = router;
