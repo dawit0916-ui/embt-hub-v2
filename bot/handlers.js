@@ -91,9 +91,9 @@ const sentMsg = await ctx.reply(
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
     }
 });
-const WEBAPP_URL = 'https://mini-app-ui-embta.vercel.app/feedback.html';
+const WEBAPP_URL = 'https://mini-app-ui-embta.vercel.app';
 bot.telegram.setChatMenuButton({
-  menuButton: { type: 'web_app', text: '💬 Feedback', web_app: { url: WEBAPP_URL } },
+  menuButton: { type: 'web_app', text: 'Open', web_app: { url: WEBAPP_URL } },
 }).catch(console.error);
 
 // Inline button handler for reminder start button
