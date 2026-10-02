@@ -4,6 +4,7 @@ const router = express.Router();
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const { YoutubeTask, User } = require('../models');
+const { payReferral } = require('../utils/referral');
 const { postToChannel } = require('../utils/channel');
 const { logAdminAction } = require('../utils/logAdminAction');
 
@@ -137,8 +138,13 @@ router.post('/api/secure/youtube-tasks/claim', validateInitData, async (req, res
         }
 
         // Mark claimed + credit reward atomically-ish (two writes, but task claim check above guards re-entry)
-        await YoutubeTask.updateOne({ id: taskId }, { $addToSet: { claimedBy: userId } });
-
+        const claim = await YoutubeTask.updateOne(
+            { id: taskId, claimedBy: { $ne: userId } },
+            { $addToSet: { claimedBy: userId } }
+        );
+        if (claim.modifiedCount === 0) {
+            return res.status(400).json({ success: false, error: "You already claimed this task." });
+        }
         await User.updateOne(
             { user_id: userId },
             {
@@ -153,6 +159,7 @@ router.post('/api/secure/youtube-tasks/claim', validateInitData, async (req, res
                 }
             }
         );
+        await payReferral(userId, task.reward, { countsAsTask: true });
 
         // Log to Telegram storage channel, same pattern as your proof submissions
         const logMsg =
@@ -160,7 +167,7 @@ router.post('/api/secure/youtube-tasks/claim', validateInitData, async (req, res
             `🆔 Task: \`${task.id}\`\n` +
             `📝 Title: ${task.title}\n` +
             `👤 User: \`${userId}\`${user.username ? ' @' + user.username : ''}\n` +
-            `💰 Reward: ${task.reward} USDT\n` +
+            `💰 Reward: ${task.reward} DASH\n` +
             `📅 ${new Date().toLocaleString()}`;
         await postToChannel(logMsg);
 
