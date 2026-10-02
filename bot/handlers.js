@@ -134,7 +134,7 @@ const sentMsg = await ctx.reply(
         // ⚠️ Safer: Only push the reply message ID
         await User.updateOne(
             { user_id: userId },
-            { $push: { pending_message_cleanup: openedMsg.message_id } }
+            { $push: { pending_message_cleanup: sentMsg.message_id } }
         );
     } catch (err) {
         console.error('[Reminder Button Error]:', err.message);
