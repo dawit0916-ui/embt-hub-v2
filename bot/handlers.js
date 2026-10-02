@@ -7,6 +7,7 @@ const { logAdminAction } = require('../utils/logAdminAction');
 
 // Track admin sessions for multi-step video/APK upload workflow
 const adminVideoSessions = new Map();
+const WELCOME_BONUS = 500;
 
 async function askForCourse(ctx) {
     const courses = await ShopProduct.find({ type: 'course', active: true }).select('_id title').limit(20);
@@ -39,13 +40,18 @@ bot.start(async (ctx) => {
     try {
         let user = await User.findOne({ user_id: userId });
 
+        let isNewUser = false;
+
         if (!user) {
             user = await User.create({
                 user_id: userId,
                 username: currentUsername,
                 first_name: currentFirstName,
                 referred_by: referrerId ? parseInt(referrerId) : null,
+                balance: WELCOME_BONUS,
+                welcome_bonus_claimed: true,
             });
+            isNewUser = true;
             if (referrerId && !isNaN(parseInt(referrerId))) {
                 await User.updateOne({ user_id: parseInt(referrerId) }, { $inc: { referralCount: 1 } });
             }
@@ -83,9 +89,19 @@ const sentMsg = await ctx.reply(
             { user_id: userId },
             { $push: { pending_message_cleanup: { $each: [ctx.message.message_id, sentMsg.message_id] } } }
         );
-
-
-
+        if (isNewUser) {
+          const wel =  await ctx.reply(
+                `🎁 <b>Welcome Bonus!</b>\n\n` +
+                `You just received <b>${WELCOME_BONUS} DASH</b> in your balance.\n` +
+                `Open the app now and start using it to earn even more! ⚡`,
+                {
+                    parse_mode: 'HTML',
+                    ...Markup.inlineKeyboard([
+                        [btn('🚀 Open & Use your Bonus', MINI_APP_URL, 'success')]
+                    ])
+                }
+            );
+        }
     } catch (error) {
         console.error("START ERROR:", error);
         return ctx.reply(`⚠️ Error initializing your dashboard.\n\n${error.message}`);
