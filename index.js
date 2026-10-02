@@ -77,7 +77,7 @@ app.get('/', (req, res) => res.send('Gateway Active'));
 
 bot.launch({
   dropPendingUpdates: true,
-  allowedUpdates: ['message', 'callback_query', 'chat_member', 'message_reaction', 'message_reaction_count']
+  allowedUpdates: ['message', 'callback_query', 'chat_member']
 }).catch((err) => {
   console.error('❌ Bot polling died, forcing restart:', err.message);
   process.exit(1); // let Render restart the process so polling comes back clean
