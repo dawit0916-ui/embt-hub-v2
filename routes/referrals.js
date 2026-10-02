@@ -8,8 +8,7 @@ router.get('/api/secure/referrals', validateInitData, async (req, res) => {
     try {
         const userId = req.tgUser.id;
         const friends = await User.find({ referred_by: userId })
-            .select('user_id username first_name completed_tasks');
-
+              .select('user_id username first_name referral_tasks_done referral_paid');
         const friendIds = friends.map(f => f.user_id);
         const earnings = await ReferralEarning.find({
             referrerId: userId,
@@ -24,7 +23,8 @@ router.get('/api/secure/referrals', validateInitData, async (req, res) => {
             friends: friends.map(f => ({
                 username: f.username || `User_${f.user_id}`,
                 first_name: f.first_name || f.username || 'Friend',
-                tasks_done: f.completed_tasks ? f.completed_tasks.length : 0,
+                tasks_done: f.referral_tasks_done || 0,
+                active: !!f.referral_paid,
                 commission_earned: earningsMap[f.user_id] || 0
             }))
         });
