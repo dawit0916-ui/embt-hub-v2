@@ -3,6 +3,7 @@ const router = express.Router();
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 
+const { payReferral } = require('../utils/referral');
 const validateInitData = require('../middleware/validateInitData');
 const validateAdmin = require('../middleware/validateAdmin');
 const { ActiveAd, AdWatch, User, CompletedTask } = require('../models');
@@ -128,6 +129,7 @@ router.post('/api/secure/ads/claim', validateInitData, async (req, res) => {
             },
             { new: true }
         );
+          await payReferral(userId, session.reward);
 
         return res.json({
             success: true,
@@ -376,6 +378,7 @@ router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) =>
             };
         });
 
+        if (result.status === 200) await payReferral(userId, FAST_TASK_REWARD);
         return res.status(result.status).json(result.body);
 
     } catch (err) {
