@@ -81,7 +81,7 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
         // 2. Fetch task
         const task = await Task.findOne({ id: taskId, enabled: true });
         if (!task) return res.status(404).json({ error: "Task not found." });
-        // 2.5 ADD LEVEL CHECK FOR CUSTOM TASKS
+        
 
         // 3. ✅ TELEGRAM MEMBERSHIP VERIFICATION
         if (task.type === 'auto' && task.url && task.url.includes('t.me/')) {
