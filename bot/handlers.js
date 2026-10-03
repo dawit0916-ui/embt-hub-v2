@@ -47,12 +47,12 @@ bot.start(async (ctx) => {
                 user_id: userId,
                 username: currentUsername,
                 first_name: currentFirstName,
-                referred_by: referrerId ? parseInt(referrerId) : null,
+                referred_by: (referrerId && parseInt(referrerId) !== userId && !isNaN(parseInt(referrerId))) ? parseInt(referrerId) : null,
                 balance: WELCOME_BONUS,
                 welcome_bonus_claimed: true,
             });
             isNewUser = true;
-            if (referrerId && !isNaN(parseInt(referrerId))) {
+            if (referrerId && !isNaN(parseInt(referrerId)) && parseInt(referrerId) !== userId) {
                 await User.updateOne({ user_id: parseInt(referrerId) }, { $inc: { referralCount: 1 } });
             }
         } else {
