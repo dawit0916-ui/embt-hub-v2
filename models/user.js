@@ -24,11 +24,9 @@ const User = mongoose.model('User', new mongoose.Schema({
     penalized_tasks: [String],
     is_banned: { type: Boolean, default: false },
     last_admin_active: { type: Date, default: null },
-
     whitelisted: { type: Boolean, default: false },
-
-    referred_by: { type: Number, default: null },
-   
+    referred_by: { type: Number, default: null, index: true },
+  
     // --- NEW: streak tracking ---
     currentStreak: { type: Number, default: 0 },
     longestStreak: { type: Number, default: 0 },
