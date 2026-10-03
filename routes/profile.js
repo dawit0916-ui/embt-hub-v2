@@ -46,7 +46,7 @@ router.get('/api/secure/profile', validateInitData, async (req, res) => {
                 balance: user.balance || 0,
                 
                 total_earned: user.total_earned || 0,
-                referrals: user.referralCount || 0,
+                referrals: await User.countDocuments({ referred_by: user.user_id }),
                 tasksCompletedCount: user.completed_tasks ? user.completed_tasks.length : 0,
                 completed_tasks: user.completed_tasks || [],
                 is_banned: user.is_banned || false,
