@@ -7,14 +7,14 @@ const { User } = require('../models');
 // Invites are counted live from referred_by so they always match the Friends tab
 async function inviteLeaderboard(userId) {
     const top = await User.aggregate([
-        { $match: { referred_by: { $ne: null } } },
+        { $match: { referred_by: { $ne: null }, referral_paid: true  } },
         { $group: { _id: '$referred_by', score: { $sum: 1 } } },
         { $sort: { score: -1 } },
-        { $limit: 60 },
+        { $limit: 35 },
         { $lookup: { from: 'users', localField: '_id', foreignField: 'user_id', as: 'u' } },
         { $unwind: '$u' },
         { $match: { 'u.is_banned': { $ne: true } } },
-        { $limit: 50 },
+        { $limit: 25 },
         { $project: { _id: 0, user_id: '$_id', score: 1, first_name: '$u.first_name', username: '$u.username' } }
     ]);
 
@@ -30,7 +30,7 @@ async function inviteLeaderboard(userId) {
     if (!myEntry) {
         const myScore = await User.countDocuments({ referred_by: userId });
         const higher = await User.aggregate([
-            { $match: { referred_by: { $ne: null } } },
+            { $match: { referred_by: { $ne: null }, referral_paid: true } },
             { $group: { _id: '$referred_by', n: { $sum: 1 } } },
             { $match: { n: { $gt: myScore } } },
             { $count: 'c' }
@@ -61,7 +61,7 @@ router.get('/api/secure/leaderboard', validateInitData, async (req, res) => {
         const topUsers = await User.find({ is_banned: false })
             .select(`user_id username first_name ${sortField}`)
             .sort({ [sortField]: -1 })
-            .limit(50)
+            .limit(25)
             .lean();
 
         const leaderboard = topUsers.map((u, idx) => ({
