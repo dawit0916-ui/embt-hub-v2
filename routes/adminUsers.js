@@ -73,6 +73,13 @@ router.get('/api/admin/users', validateAdmin, async (req, res) => {
                 .lean(), // Boosts read performance dramatically
             User.countDocuments(databaseQuery)
         ]);
+        const ids = usersList.map(u => u.user_id);
+        const countRows = await User.aggregate([
+            { $match: { referred_by: { $in: ids } } },
+            { $group: { _id: '$referred_by', total: { $sum: 1 }, active: { $sum: { $cond: ['$referral_paid', 1, 0] } } } }
+        ]);
+        const refMap = {};
+        countRows.forEach(r => { refMap[r._id] = r; });
 
         // 4. Return Clean Scalable Pagination Metadata Object Payload
         return res.json({
@@ -90,7 +97,8 @@ router.get('/api/admin/users', validateAdmin, async (req, res) => {
                 balance: u.balance || 0,
                 
                 total_earned: u.total_earned || 0,
-                referralCount: u.referralCount || 0,
+                referralCount: refMap[u.user_id]?.total || 0,
+                activeReferrals: refMap[u.user_id]?.active || 0,
                 tasksCompleted: u.completed_tasks ? u.completed_tasks.length : 0,
                 is_banned: u.is_banned || false,
                 red_flag: u.red_flag || false,
