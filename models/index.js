@@ -9,14 +9,13 @@ const Task = require('./task');
 const ProofSubmission = require('./proofSubmission');
 const AdminActivity = require('./adminActivity');
 const AdWatch = require('./adWatch');
-const DailyTaskProgress = require('./dailyTaskProgress');
+
 const ActiveAd = require('./activeAd');
 const YoutubeTask = require('./youtubeTask');
 const TelegramVerification = require('./telegramVerification');
 const ReminderConfig = require('./reminderConfig');
 const UserReminder = require('./userReminder');
 const Feedback = require('./feedback');
-const FeatureUsageLog = require('./featureUsageLog');
 
 const CompletedTask = require('./completedTask');
 const ShopProduct = require('./shopProduct');
@@ -39,14 +38,13 @@ module.exports = {
     ProofSubmission,
     AdminActivity,
     AdWatch,
-    DailyTaskProgress,
+    
     ActiveAd,
     YoutubeTask,
     TelegramVerification,
     ReminderConfig,
     UserReminder,
     Feedback,
-    FeatureUsageLog,
     
     CompletedTask,
     ShopProduct,
