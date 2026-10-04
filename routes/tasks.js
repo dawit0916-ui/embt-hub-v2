@@ -116,8 +116,7 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
             { $inc: { completions: 1 } }
         );
         if (!slot) return res.status(400).json({ error: "This task is full." });
-
-        // 4. Get settings
+        
         // 4. Pay (guarded so a double-tap can't pay twice)
         const paid = await User.updateOne(
             { user_id: userId, completed_tasks: { $ne: taskId } },
@@ -136,6 +135,10 @@ router.post('/api/secure/claim-task', validateInitData, async (req, res) => {
 
         // 5. Referral: commission + milestone bonus
         await payReferral(userId, task.reward, { countsAsTask: true });
+
+        // 6. Return updated balance
+        const fresh = await User.findOne({ user_id: userId }).select('balance').lean();
+        return res.json({ success: true, reward: task.reward, newBalance: fresh ? fresh.balance : 0 });
     } catch (err) {
         console.error("Claim task error:", err);
         return res.status(500).json({ error: "Internal server error." });
