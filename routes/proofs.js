@@ -68,6 +68,7 @@ router.post('/api/secure/submit-proof', validateInitData, async (req, res) => {
             const base64Data = screenshot.replace(/^data:image\/\w+;base64,/, '');
             const buffer = Buffer.from(base64Data, 'base64');
             const result = await postPhotoToChannel(buffer, captionHeader);
+            if (!result.fileId) return res.status(502).json({ error: "Couldn't save your screenshot. Please try again." });
             telegramFileId = result.fileId;
             channelMessageId = result.messageId;
         } else {
