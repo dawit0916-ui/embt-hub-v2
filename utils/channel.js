@@ -1,4 +1,4 @@
-qconst bot = require('../bot/bot');
+const bot = require('../bot/bot');
 const { STORAGE_CHANNEL_ID } = require('../config/constants');
 
 async function postToChannel(text, extra = {}) {
