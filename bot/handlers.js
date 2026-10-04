@@ -52,9 +52,7 @@ bot.start(async (ctx) => {
                 welcome_bonus_claimed: true,
             });
             isNewUser = true;
-            if (referrerId && !isNaN(parseInt(referrerId)) && parseInt(referrerId) !== userId) {
-                await User.updateOne({ user_id: parseInt(referrerId) }, { $inc: { referralCount: 1 } });
-            }
+            
         } else {
             await User.updateOne(
                 { user_id: userId },
