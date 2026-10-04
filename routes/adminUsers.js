@@ -3,7 +3,7 @@ const router = express.Router();
 
 const validateAdmin = require('../middleware/validateAdmin');
 const bot = require('../bot/bot');
-const { User } = require('../models');
+const { User, ReferralEarning, AdminActivity } = require('../models');
 const { logAdminAction } = require('../utils/logAdminAction');
 
 router.get('/api/admin/directory', validateAdmin, async (req, res) => {
@@ -123,36 +123,50 @@ router.post('/api/admin/user/update', validateAdmin, async (req, res) => {
             return res.status(400).json({ error: "Target Identity Specification parameter is missing." });
         }
 
-        // 1. Map incoming payload adjustments cleanly into an update object
+        const before = await User.findOne({ user_id: Number(target_user_id) })
+            .select('balance is_banned red_flag').lean();
+        if (!before) {
+            return res.status(404).json({ error: "User configuration track not found in collection tracking database." });
+        }
+
         let dynamicUpdates = {};
         if (balance !== undefined) dynamicUpdates.balance = Number(balance);
         if (is_banned !== undefined) dynamicUpdates.is_banned = Boolean(is_banned);
         if (red_flag !== undefined) dynamicUpdates.red_flag = Boolean(red_flag);
 
-        // 2. Perform the atomic update directly inside your MongoDB instance
         const updatedUser = await User.findOneAndUpdate(
             { user_id: Number(target_user_id) },
             { $set: dynamicUpdates },
-            { new: true } // Returns the newly modified state document
+            { new: true }
         );
 
-        if (!updatedUser) {
-            return res.status(404).json({ error: "User configuration track not found in collection tracking database." });
+        // --- AUDIT: only record fields that actually changed ---
+        const changes = [];
+        for (const field of Object.keys(dynamicUpdates)) {
+            const oldVal = before[field] ?? (typeof dynamicUpdates[field] === 'boolean' ? false : 0);
+            if (oldVal !== dynamicUpdates[field]) {
+                changes.push({ field, from: oldVal, to: dynamicUpdates[field] });
+            }
+        }
+        if (changes.length) {
+            await logAdminAction(
+                req.adminUser,
+                'user_edited',
+                `Edited user ${target_user_id}: ` + changes.map(c => `${c.field} ${c.from} → ${c.to}`).join(', '),
+                { target_user_id: Number(target_user_id), changes }
+            );
         }
 
-        // 3. Send confirmation payload back to admin panel view
         return res.json({
             success: true,
             message: `User ${target_user_id} parameters updated successfully.`,
             user: {
                 user_id: updatedUser.user_id,
                 balance: updatedUser.balance,
-                
                 is_banned: updatedUser.is_banned,
                 red_flag: updatedUser.red_flag
             }
         });
-
     } catch (err) {
         console.error("Admin real-time document write failure:", err);
         return res.status(500).json({ error: "Direct Update Modifier Transaction Aborted." });
@@ -174,7 +188,13 @@ router.post('/api/admin/users/ban', validateAdmin, async (req, res) => {
         );
 
         if (!updatedUser) return res.status(404).json({ error: "User not found." });
-        await logAdminAction(req.adminUser, banned ? 'user_banned' : 'user_unbanned', `User ${userId}`);
+        await logAdminAction(
+            req.adminUser,
+            banned ? 'user_banned' : 'user_unbanned',
+            `User ${userId}`,
+            { target_user_id: Number(userId), changes: [{ field: 'is_banned', from: !banned, to: !!banned }] }
+        
+        );
         // Notify user via bot
         try {
             const msg = banned
@@ -191,4 +211,79 @@ router.post('/api/admin/users/ban', validateAdmin, async (req, res) => {
     }
 });
 
+// 🔗 REFERRAL CONNECTION MAP: who invited this user + who they invited
+router.get('/api/admin/user/:id/referrals', validateAdmin, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        const pick = 'user_id first_name username referred_by referral_paid is_banned red_flag createdAt';
+
+        const me = await User.findOne({ user_id: id }).select(pick).lean();
+        if (!me) return res.status(404).json({ error: 'User not found.' });
+
+        // Upline chain (walk up referred_by, max 5 levels, loop-safe)
+        const upline = [];
+        const seen = new Set([id]);
+        let cursor = me.referred_by;
+        while (cursor && upline.length < 5 && !seen.has(cursor)) {
+            seen.add(cursor);
+            const u = await User.findOne({ user_id: cursor }).select(pick).lean();
+            if (!u) { upline.push({ user_id: cursor, missing: true }); break; }
+            upline.push(u);
+            cursor = u.referred_by;
+        }
+
+        // Direct downline + what each friend earned this user
+        const [friends, earnings] = await Promise.all([
+            User.find({ referred_by: id }).select(pick).sort({ createdAt: -1 }).limit(200).lean(),
+            ReferralEarning.find({ referrerId: id }).lean()
+        ]);
+        const earnMap = {};
+        earnings.forEach(e => { earnMap[e.friendId] = e.totalEarned; });
+
+        // Grand-downline counts (level 2) per friend, in one query
+        const friendIds = friends.map(f => f.user_id);
+        const subRows = await User.aggregate([
+            { $match: { referred_by: { $in: friendIds } } },
+            { $group: { _id: '$referred_by', n: { $sum: 1 } } }
+        ]);
+        const subMap = {};
+        subRows.forEach(r => { subMap[r._id] = r.n; });
+
+        const slim = u => u.missing ? u : ({
+            user_id: u.user_id, first_name: u.first_name || 'Member', username: u.username || null,
+            is_banned: !!u.is_banned, red_flag: !!u.red_flag, activated: !!u.referral_paid, createdAt: u.createdAt
+        });
+
+        return res.json({
+            success: true,
+            me: slim(me),
+            upline: upline.map(slim),                       // [0] = direct inviter, then their inviter...
+            downline: friends.map(f => ({
+                ...slim(f),
+                earned_for_referrer: earnMap[f.user_id] || 0,
+                their_referrals: subMap[f.user_id] || 0
+            })),
+            totals: {
+                friends: friends.length,
+                activated: friends.filter(f => f.referral_paid).length,
+                commission: earnings.reduce((s, e) => s + (e.totalEarned || 0), 0)
+            }
+        });
+    } catch (err) {
+        console.error('Referral map error:', err);
+        return res.status(500).json({ error: 'Failed to load referral map.' });
+    }
+});
+
+// 🧾 AUDIT HISTORY: every admin edit made to this user
+router.get('/api/admin/user/:id/audit', validateAdmin, async (req, res) => {
+    try {
+        const logs = await AdminActivity.find({ target_user_id: Number(req.params.id) })
+            .sort({ timestamp: -1 }).limit(50).lean();
+        return res.json({ success: true, logs });
+    } catch (err) {
+        console.error('Audit history error:', err);
+        return res.status(500).json({ error: 'Failed to load audit history.' });
+    }
+});
 module.exports = router;
