@@ -13,8 +13,8 @@ const User = mongoose.model('User', new mongoose.Schema({
     current_state: String,
     pending_message_cleanup: { type: [Number], default: [] },
     red_flag: { type: Boolean, default: false },
-    referralCount: { type: Number, default: 0 },
-    lastClaimDate: { type: Date, default: null },
+    
+  
     // --- welcome bonus ---
     welcome_bonus_claimed: { type: Boolean, default: false },
     history: [{ type: Object }],
