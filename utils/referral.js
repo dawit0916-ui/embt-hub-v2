@@ -2,12 +2,37 @@ const { User, ReferralEarning } = require('../models');
 const bot = require('../bot/bot');
 const { getSettings } = require('./settings');
 
+// Flips a friend to Active and pays the one-time invite bonus. Safe to call repeatedly.
+async function awardMilestone(friendId, referrerId, settings) {
+    const required = settings.ref_tasks_required || 3;
+    const flipped = await User.updateOne(
+        { user_id: friendId, referral_paid: { $ne: true }, referral_tasks_done: { $gte: required } },
+        { $set: { referral_paid: true } }
+    );
+    if (flipped.modifiedCount === 0) return false;
+
+    const bonus = settings.ref_bonus_amount || 0;
+    if (bonus > 0) {
+        await User.updateOne({ user_id: referrerId }, { $inc: { balance: bonus } });
+    }
+    try {
+        await bot.telegram.sendMessage(
+            referrerId,
+            `🎊 *Invite Bonus:* Your friend completed ${required} tasks! You earned ${bonus} DASH.\nYou now earn ${settings.ref_commission_percent ?? 10}% of everything this friend earns.`,
+            { parse_mode: 'Markdown' }
+        );
+    } catch (botErr) {
+        console.error('Referral notify error:', botErr.message);
+    }
+    return true;
+}
+
 /**
  * Call right AFTER crediting `reward` to `userId`.
  * - Pays the referrer a commission on the reward
- * - If countsAsTask: bumps the friend's task counter and pays the one-time
- *   invite bonus when the required task count is reached
- * Never throws — a referral failure must not break the user's own claim.
+ * - If countsAsTask: bumps the friend's task counter
+ * - On ANY earning, activates the friend once they have enough tasks
+ * Never throws: a referral failure must not break the user's own claim.
  */
 async function payReferral(userId, reward, { countsAsTask = false } = {}) {
     try {
@@ -33,30 +58,9 @@ async function payReferral(userId, reward, { countsAsTask = false } = {}) {
             );
         }
 
-        // 2. One-time invite bonus after N completed tasks
-        if (countsAsTask && !friend.referral_paid) {
-            const required = settings.ref_tasks_required || 3;
-            if (friend.referral_tasks_done >= required) {
-                const flipped = await User.updateOne(
-                    { user_id: userId, referral_paid: { $ne: true } },
-                    { $set: { referral_paid: true } }
-                );
-                if (flipped.modifiedCount > 0) {
-                    const bonus = settings.ref_bonus_amount || 0;
-                    if (bonus > 0) {
-                        await User.updateOne({ user_id: friend.referred_by }, { $inc: { balance: bonus } });
-                    }
-                    try {
-                        await bot.telegram.sendMessage(
-                            friend.referred_by,
-                            `🎊 *Invite Bonus:* Your friend completed ${required} tasks! You earned ${bonus} DASH.\nYou now earn ${settings.ref_commission_percent ?? 10}% of everything this friend earns.`,
-                            { parse_mode: 'Markdown' }
-                        );
-                    } catch (botErr) {
-                        console.error('Referral notify error:', botErr.message);
-                    }
-                }
-            }
+        // 2. Activate when enough tasks are done (runs on any earning, so it self-heals)
+        if (!friend.referral_paid && friend.referral_tasks_done >= (settings.ref_tasks_required || 3)) {
+            await awardMilestone(userId, friend.referred_by, settings);
         }
     } catch (err) {
         console.error('payReferral error:', err);
