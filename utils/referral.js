@@ -1,6 +1,7 @@
 const { User, ReferralEarning } = require('../models');
 const bot = require('../bot/bot');
 const { getSettings } = require('./settings');
+const { recordEarning, recordInvite } = require('./weekly');
 
 // Flips a friend to Active and pays the one-time invite bonus. Safe to call repeatedly.
 async function awardMilestone(friendId, referrerId, settings) {
@@ -10,6 +11,7 @@ async function awardMilestone(friendId, referrerId, settings) {
         { $set: { referral_paid: true } }
     );
     if (flipped.modifiedCount === 0) return false;
+    await recordInvite(referrerId);
 
     const bonus = settings.ref_bonus_amount || 0;
     if (bonus > 0) {
@@ -37,6 +39,7 @@ async function awardMilestone(friendId, referrerId, settings) {
 async function payReferral(userId, reward, { countsAsTask = false } = {}) {
     try {
         if (!(reward > 0)) return;
+        await recordEarning(userId, reward);
 
         const fields = 'referred_by referral_paid referral_tasks_done';
         const friend = countsAsTask
