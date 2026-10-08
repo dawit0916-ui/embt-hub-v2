@@ -16,7 +16,8 @@ const TelegramVerification = require('./telegramVerification');
 const ReminderConfig = require('./reminderConfig');
 const UserReminder = require('./userReminder');
 const Feedback = require('./feedback');
-
+const WeeklyStat = require('./weeklyStat');
+const WeeklyPayout = require('./weeklyPayout');
 const CompletedTask = require('./completedTask');
 const ShopProduct = require('./shopProduct');
 const CourseLesson = require('./courseLesson');
@@ -38,7 +39,8 @@ module.exports = {
     ProofSubmission,
     AdminActivity,
     AdWatch,
-    
+    WeeklyStat,
+    WeeklyPayout,
     ActiveAd,
     YoutubeTask,
     TelegramVerification,
