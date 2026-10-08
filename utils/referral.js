@@ -50,19 +50,21 @@ async function payReferral(userId, reward, { countsAsTask = false } = {}) {
         const settings = await getSettings();
         if (!settings) return;
 
-        // 1. Commission on this earning
-        const commission = reward * ((settings.ref_commission_percent ?? 10) / 100);
-        if (commission > 0) {
-            await User.updateOne({ user_id: friend.referred_by }, { $inc: { balance: commission } });
-            await ReferralEarning.updateOne(
-                { referrerId: friend.referred_by, friendId: userId },
-                { $inc: { totalEarned: commission }, $set: { lastEarnedAt: new Date() } },
-                { upsert: true }
-            );
+        // 1. Commission only once the friend is already activated (no hold, no back-pay)
+        if (friend.referral_paid) {
+            const commission = reward * ((settings.ref_commission_percent ?? 10) / 100);
+            if (commission > 0) {
+                await User.updateOne({ user_id: friend.referred_by }, { $inc: { balance: commission } });
+                await ReferralEarning.updateOne(
+                    { referrerId: friend.referred_by, friendId: userId },
+                    { $inc: { totalEarned: commission }, $set: { lastEarnedAt: new Date() } },
+                    { upsert: true }
+                );
+            }
         }
 
         // 2. Activate when enough tasks are done (runs on any earning, so it self-heals)
-        if (!friend.referral_paid && friend.referral_tasks_done >= (settings.ref_tasks_required || 3)) {
+        if (!friend.referral_paid && friend.referral_tasks_done >= (settings.ref_tasks_required || 5)) {
             await awardMilestone(userId, friend.referred_by, settings);
         }
     } catch (err) {
