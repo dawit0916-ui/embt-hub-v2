@@ -6,6 +6,7 @@ const https = require('https');
 const cors = require('cors');
 
 const { PORT } = require('./config/constants');
+const { startWeeklyPayoutWorker } = require('./utils/weeklyPayout');
 const enforceGlobalMaintenanceGate = require('./middleware/maintenanceGate');
 
 const app = express();
@@ -71,7 +72,10 @@ app.listen(PORT, () => console.log(`Backend gateway infrastructure running on ch
 setInterval(() => { https.get('https://embt-gateway.onrender.com', () => console.log('🛰 Core link self-ping complete')); }, 10 * 60 * 1000);
 
 
-mongoose.connect(process.env.MONGO_URI).then(() => console.log("✅ Main Database Node Connected & Synced"));
+mongoose.connect(process.env.MONGO_URI).then(() => {
+    console.log("✅ Main Database Node Connected & Synced");
+    startWeeklyPayoutWorker();
+});
 
 app.get('/', (req, res) => res.send('Gateway Active'));
 
