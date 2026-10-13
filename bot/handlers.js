@@ -1,5 +1,7 @@
 const { Markup } = require('telegraf');
 const bot = require('./bot');
+const UserNotifState = require('../models/userNotifState');
+
 
 const { admins, PUBLIC_GROUP_ID, STORAGE_CHANNEL_ID } = require('../config/constants');
 const { User, CompletedTask, UserReminder, ShopProduct, CourseLesson } = require('../models');
@@ -155,6 +157,26 @@ const sentMsg = await ctx.reply(
     }
 });
 
+bot.action('notif_mute', async (ctx) => {
+    try {
+        await UserNotifState.updateOne(
+            { user_id: ctx.from.id },
+            { $set: { muted: true } },
+            { upsert: true }
+        );
+        await ctx.answerCbQuery('Muted 🔕 Send /notify_on to turn back on');
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] }).catch(() => {});
+    } catch (e) { console.error('notif_mute error:', e.message); }
+});
+
+bot.command('notify_on', async (ctx) => {
+    await UserNotifState.updateOne(
+        { user_id: ctx.from.id },
+        { $set: { muted: false } },
+        { upsert: true }
+    );
+    await ctx.reply('🔔 Notifications are back on.');
+});
 // =====================================================
 // ENHANCED BOT VIDEO HANDLER - AUTO FILE_ID CAPTURE
 // =====================================================
