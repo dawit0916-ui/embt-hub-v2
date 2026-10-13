@@ -62,6 +62,7 @@ const bot = require('./bot/bot');
 require('./bot/handlers');
 require('./bot/ghostValidator');
 require('./bot/reminders');
+require('./bot/smartNotifications');
 require('./bot/adWatchCleanup');
 
 process.on('unhandledRejection', (reason) => console.log('❌ Host Process Unhandled Rejection Fault:', reason));
