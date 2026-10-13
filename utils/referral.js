@@ -64,7 +64,7 @@ async function payReferral(userId, reward, { countsAsTask = false } = {}) {
         }
 
         // 2. Activate when enough tasks are done (runs on any earning, so it self-heals)
-        if (!friend.referral_paid && friend.referral_tasks_done >= (settings.ref_tasks_required || 5)) {
+        if (!friend.referral_paid && friend.referral_tasks_done >= (settings.ref_tasks_required || 3)) {
             await awardMilestone(userId, friend.referred_by, settings);
         }
     } catch (err) {
