@@ -66,10 +66,11 @@ router.get('/api/secure/my-shop-purchases', validateInitData, async (req, res) =
     try {
         const userId = req.tgUser.id;
 
-        const purchases = await UserPurchase.find({
+        const purchases = (await UserPurchase.find({
             userId,
             status: 'active'
-        }).populate('productId', '_id title category type thumbnail price');
+        }).populate('productId', '_id title category type thumbnail price'))
+          .filter(p => p.productId);
 
         res.json({ success: true, purchases });
     } catch (err) {
@@ -390,21 +391,32 @@ router.delete('/api/admin/shop/lesson/:lessonId', validateAdmin, async (req, res
 });
 
 
-// Delete product (cascade delete lessons)
+// Delete product (hide if anyone bought it, hard delete + cascade lessons otherwise)
 router.delete('/api/admin/shop/product/:productId', validateAdmin, async (req, res) => {
     try {
         const { productId } = req.params;
 
-        const product = await ShopProduct.findByIdAndDelete(productId);
+        const product = await ShopProduct.findById(productId);
         if (!product) {
             return res.status(404).json({ error: 'Product not found' });
         }
 
-        // Delete all associated lessons
+        const hasPurchases = await UserPurchase.exists({ productId, status: 'active' });
+
+        if (hasPurchases) {
+            // Buyers keep access; product just disappears from the shop
+            product.active = false;
+            product.updatedAt = new Date();
+            await product.save();
+
+            await logAdminAction(req.adminUser, 'shop_hide_product', `Hid product (has buyers): ${product.title}`);
+            return res.json({ success: true, message: 'Product has buyers, so it was hidden instead of deleted' });
+        }
+
         await CourseLesson.deleteMany({ courseId: productId });
+        await ShopProduct.findByIdAndDelete(productId);
 
         await logAdminAction(req.adminUser, 'shop_delete_product', `Deleted product: ${product.title}`);
-
         res.json({ success: true, message: 'Product deleted' });
     } catch (err) {
         console.error('Delete product error:', err);
