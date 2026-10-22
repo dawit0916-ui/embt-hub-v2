@@ -33,7 +33,7 @@ async function getIpReputation(ip) {
 }
 
 async function checkVpn(req, res, next) {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+  const ip = req.ip || req.socket.remoteAddress;
   const rep = await getIpReputation(ip);
 
   let action = 'allow';
