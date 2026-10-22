@@ -9,7 +9,7 @@ const Task = require('./task');
 const ProofSubmission = require('./proofSubmission');
 const AdminActivity = require('./adminActivity');
 const AdWatch = require('./adWatch');
-
+const MarketplaceStart = require('./marketplaceStart');
 const ActiveAd = require('./activeAd');
 const YoutubeTask = require('./youtubeTask');
 const TelegramVerification = require('./telegramVerification');
@@ -47,7 +47,7 @@ module.exports = {
     ReminderConfig,
     UserReminder,
     Feedback,
-    
+    MarketplaceStart,
     CompletedTask,
     ShopProduct,
     CourseLesson,
