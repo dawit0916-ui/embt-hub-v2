@@ -7,9 +7,12 @@ const cors = require('cors');
 
 const { PORT } = require('./config/constants');
 const { startWeeklyPayoutWorker } = require('./utils/weeklyPayout');
+const { expireStalePending } = require('./utils/marketplaceApproval');
 const enforceGlobalMaintenanceGate = require('./middleware/maintenanceGate');
 
 const app = express();
+
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 2);
 
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
@@ -76,6 +79,9 @@ setInterval(() => { https.get('https://embt-gateway.onrender.com', () => console
 mongoose.connect(process.env.MONGO_URI).then(() => {
     console.log("✅ Main Database Node Connected & Synced");
     startWeeklyPayoutWorker();
+        setInterval(() => {
+        expireStalePending().catch(e => console.error('expireStalePending failed:', e.message));
+    }, 60 * 60 * 1000);
 });
 
 app.get('/', (req, res) => res.send('Gateway Active'));
