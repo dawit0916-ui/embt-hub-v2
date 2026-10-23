@@ -10,7 +10,6 @@ async function getSettings() {
                 ref_bonus: 1000,
                 penalty_fee: 0.1,
                 withdrawals_enabled: true,
-                maintenance_mode: false,
                 ref_commission_percent: 10,
                 ref_bonus_amount: 500,
                 ref_tasks_required: 3
