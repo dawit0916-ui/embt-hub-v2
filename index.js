@@ -86,10 +86,27 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
 
 app.get('/', (req, res) => res.send('Gateway Active'));
 
-bot.launch({
-  dropPendingUpdates: true,
-  allowedUpdates: ['message', 'callback_query', 'chat_member']
-}).catch((err) => {
-  console.error('❌ Bot polling died, forcing restart:', err.message);
-  process.exit(1); // let Render restart the process so polling comes back clean
-});
+let botConnected = false;
+
+async function launchBot(attempt = 1) {
+  try {
+    await bot.launch(
+      {
+        dropPendingUpdates: true,
+        allowedUpdates: ['message', 'callback_query', 'chat_member']
+      },
+      () => { botConnected = true; } // runs once Telegram answered getMe
+    );
+  } catch (err) {
+    // Telegram unreachable while starting: retry instead of killing the deploy
+    if (!botConnected && attempt < 6) {
+      console.error(`⚠️ Telegram not reachable at startup (attempt ${attempt}/5): ${err.message || 'no reason'} — retrying`);
+      return setTimeout(() => launchBot(attempt + 1), attempt * 3000);
+    }
+    // polling died after a good start (e.g. 409 conflict): restart the process as before
+    console.error('❌ Bot polling died, forcing restart:', err.message);
+    process.exit(1);
+  }
+}
+
+launchBot();
