@@ -20,8 +20,6 @@ router.get('/api/admin/stats', validateAdmin, async (req, res) => {
         res.json({
             users: totalUsers,
             tasks: totalTasks,
-
-            maintenance: settings.maintenance_mode,
             ref_bonus: settings.ref_bonus_amount,
             ref_percent: settings.ref_commission_percent
         });
