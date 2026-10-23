@@ -8,7 +8,6 @@ const cors = require('cors');
 const { PORT } = require('./config/constants');
 const { startWeeklyPayoutWorker } = require('./utils/weeklyPayout');
 const { expireStalePending } = require('./utils/marketplaceApproval');
-const enforceGlobalMaintenanceGate = require('./middleware/maintenanceGate');
 
 const app = express();
 
@@ -17,19 +16,8 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 2);
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
 
-// ==========================================================================
-// NOTE ON ORDERING: in the original monolithic file, the AdsGram/Monetag
-// reward-callback routes were registered BEFORE the maintenance-gate
-// middleware was mounted. In Express, middleware only applies to routes
-// registered after it in the stack — so those two S2S callback endpoints
-// have always bypassed maintenance mode. Preserving that exact ordering
-// here rather than "fixing" it, since it may be relied upon (ad network
-// callbacks needing to keep working even during maintenance).
-// ==========================================================================
+
 app.use('/', require('./routes/adsgram'));
-
-app.use('/api', enforceGlobalMaintenanceGate);
-
 app.use('/', require('./routes/verification'));
 app.use('/', require('./routes/adminStats'));
 app.use('/', require('./routes/reminders'));
