@@ -9,7 +9,10 @@ const EMPTY = { isVpn: false, isProxy: false, isTor: false, fraudScore: 0, count
 function cleanIp(raw) {
   return String(raw || '').replace(/^::ffff:/, '');
 }
-
+// Behind Cloudflare, req.ip is a Cloudflare edge address. The real visitor is in CF-Connecting-IP.
+function getClientIp(req) {
+  return cleanIp(req.headers['cf-connecting-ip'] || req.ip || req.socket.remoteAddress);
+}
 // Primary lookup: VPN / proxy / fraud score + country
 async function lookupIpqs(ip) {
   if (!process.env.IPQS_API_KEY) {
@@ -72,7 +75,7 @@ async function getIpReputation(ip) {
 }
 
 async function checkVpn(req, res, next) {
-  const ip = cleanIp(req.ip || req.socket.remoteAddress);
+    const ip = getClientIp(req);
   const rep = await getIpReputation(ip);
 
   if (!rep.country) {
