@@ -209,6 +209,25 @@ router.post('/start', validateInitData, async (req, res) => {
     if (!task) return res.status(404).json({ error: 'Task not found or no longer active' });
     if (task.creatorUserId === viewerUserId) return res.status(403).json({ error: 'You cannot do your own task.' });
 
+    // Country check BEFORE the modal opens (lookup only runs for country-restricted tasks)
+    if (task.allowedCountries.length > 0) {
+      await new Promise((resolve) => checkVpn(req, res, resolve));
+      const country = req.vpnCheck && req.vpnCheck.country;
+
+      if (!country) {
+        return res.status(503).json({
+          error: "Couldn't verify your country right now. Please try again in a moment.",
+          reason: 'country_unverified',
+        });
+      }
+      if (!task.allowedCountries.includes(country)) {
+        return res.status(403).json({
+          error: `Country didn't match. This task is only for: ${task.allowedCountries.join(', ')}.`,
+          reason: 'country_mismatch',
+        });
+      }
+    }
+
     await MarketplaceStart.updateOne(
       { taskId, viewerUserId },
       { $setOnInsert: { startedAt: new Date() } },
@@ -220,7 +239,6 @@ router.post('/start', validateInitData, async (req, res) => {
     res.status(500).json({ error: 'Could not start task' });
   }
 });
-
 // ---------------- viewer: submit proof ----------------
 // cheap checks BEFORE the expensive VPN / hash / OCR steps
 async function precheck(req, res, next) {
@@ -283,9 +301,14 @@ router.post(
         return res.status(403).json({ error: 'This screenshot has already been used for a submission.' });
       }
 
-      // 2. per-task country restriction
-      if (task.allowedCountries.length > 0 && !task.allowedCountries.includes(vpn.country)) {
-        return res.status(403).json({ error: 'This task is not available in your region.' });
+      // 2. per-task country restriction (same rule as /start, kept as a safety net)
+      if (task.allowedCountries.length > 0) {
+        if (!vpn.country) {
+          return res.status(503).json({ error: "Couldn't verify your country right now. Please try again in a moment." });
+        }
+        if (!task.allowedCountries.includes(vpn.country)) {
+          return res.status(403).json({ error: "Country didn't match. This task is not available in your region." });
+        }
       }
 
       // 3. hard VPN / fraud block
