@@ -99,9 +99,10 @@ async function launchBot(attempt = 1) {
     );
   } catch (err) {
     // Telegram unreachable while starting: retry instead of killing the deploy
-    if (!botConnected && attempt < 6) {
-      console.error(`⚠️ Telegram not reachable at startup (attempt ${attempt}/5): ${err.message || 'no reason'} — retrying`);
-      return setTimeout(() => launchBot(attempt + 1), attempt * 3000);
+    if (!botConnected) {
+      const delay = Math.min(60000, attempt * 5000);
+      console.error(`⚠️ Telegram not reachable (attempt ${attempt}): ${err.message || 'no reason'} — retrying in ${delay / 1000}s`);
+      return setTimeout(() => launchBot(attempt + 1), delay);
     }
     // polling died after a good start (e.g. 409 conflict): restart the process as before
     console.error('❌ Bot polling died, forcing restart:', err.message);
