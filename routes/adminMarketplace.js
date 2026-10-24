@@ -58,8 +58,24 @@ router.get('/pending', validateAdmin, async (req, res) => {
       .limit(100)
       .lean();
 
+    // approved / rejected counts for every viewer in the queue
+    const viewerIds = [...new Set(submissions.map((s) => s.viewerUserId))];
+    const history = await MarketplaceSubmission.aggregate([
+      { $match: { viewerUserId: { $in: viewerIds }, status: { $in: ['approved', 'rejected'] } } },
+      { $group: { _id: { v: '$viewerUserId', s: '$status' }, n: { $sum: 1 } } },
+    ]);
+    const hist = {};
+    history.forEach((h) => {
+      hist[h._id.v] = hist[h._id.v] || { approved: 0, rejected: 0 };
+      hist[h._id.v][h._id.s] = h.n;
+    });
+
     const out = submissions.map((s) => ({
       ...s,
+      viewerHistory: hist[s.viewerUserId] || { approved: 0, rejected: 0 },
+      secondsSinceStart: s.taskStartedAt
+        ? Math.round((new Date(s.createdAt) - new Date(s.taskStartedAt)) / 1000)
+        : null,
       screenshotViewUrl: s.screenshotFileId ? shotPath(s._id) : null,
     }));
     res.json({ submissions: out });
