@@ -442,7 +442,7 @@ router.post(
         viewerUserId,
         status: 'rejected',
         createdAt: { $gte: new Date(Date.now() - REJECTION_WINDOW_MS) },
-        rejectionReason: { $nin: ['expired', 'task_missing', 'duplicate_cleanup'] },
+        rejectionReason: { $nin: ['expired', 'task_missing', 'duplicate_cleanup', 'task_problem'] },
       });
 
       // 6. store screenshot (only proofs that reach a decision)
