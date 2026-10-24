@@ -14,6 +14,13 @@ const { approveSubmission } = require('../utils/marketplaceApproval');
 const { MARKETPLACE_MIN_COST, MARKETPLACE_MAX_COST } = require('../config/constants');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+const ALLOWED_PROOF_APPS = ['youtube', 'chrome', 'safari'];
+const REJECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// OCR often confuses o/0 and i/l/1 and letter case, so compare IDs in a lookalike-safe form
+function normId(s) {
+  return String(s || '').toLowerCase().replace(/o/g, '0').replace(/[il]/g, '1');
+}
 
 // ---------------- helpers ----------------
 function extractVideoId(url) {
@@ -260,6 +267,11 @@ async function precheck(req, res, next) {
     const start = await MarketplaceStart.findOne({ taskId, viewerUserId });
     if (!start) return res.status(400).json({ error: 'Open the task and tap "Start earning" first.' });
 
+        const msLeft = start.startedAt.getTime() + task.watchDurationSeconds * 1000 - Date.now();
+    if (msLeft > 0) {
+      return res.status(400).json({ error: `Keep watching: about ${Math.ceil(msLeft / 1000)} seconds left before you can submit proof.` });
+    }
+
     req.mpTask = task;
     req.mpStart = start;
     next();
@@ -288,16 +300,17 @@ router.post(
     const ocr = req.ocrResult;
 
     try {
-      const rejectRecord = (reason) => MarketplaceSubmission.create({
+      const baseDoc = {
         taskId, viewerUserId, taskStartedAt: startedAt,
         sha256: fp.sha256, pHash: fp.pHash,
-        country: vpn.country, fraudScore: vpn.fraudScore,
-        status: 'rejected', rejectionReason: reason, holdsSlot: false,
-      });
+        country: vpn.country,
+      };
 
       // 1. duplicate screenshot (any user, including the same one)
       if (fp.isDuplicate) {
-        await rejectRecord(`duplicate_screenshot_${fp.matchType}`);
+        await MarketplaceSubmission.create({
+          ...baseDoc, status: 'rejected', rejectionReason: `duplicate_screenshot_${fp.matchType}`, holdsSlot: false,
+        });
         return res.status(403).json({ error: 'This screenshot has already been used for a submission.' });
       }
 
@@ -311,62 +324,100 @@ router.post(
         }
       }
 
-      // 3. hard VPN / fraud block
-      if (vpn.action === 'block') {
-        await rejectRecord('vpn_fraud_score_block');
-        return res.status(403).json({ error: 'Submission blocked due to network security flag.' });
+      // 3. OCR verdict
+      const required = task.watchDurationSeconds;
+      const idRead = !ocr.error && ocr.videoId !== null;
+      const idMatches = idRead && normId(ocr.videoId) === normId(task.videoId);
+      const timeRead = !ocr.error && ocr.elapsedSeconds !== null;
+      const timeEnough = timeRead && ocr.elapsedSeconds >= required;
+
+      // 3a. AUTO-REJECT: OCR worked, and the proof is clearly wrong
+      let autoReject = null;
+      if (!ocr.error) {
+        if (!idRead && !timeRead) {
+          autoReject = {
+            reason: 'no_stats_overlay',
+            message: "We couldn't read Stats for Nerds in your screenshot. Turn it on, keep it visible, and take a clear screenshot while the video plays.",
+          };
+        } else if (idRead && !idMatches) {
+          autoReject = {
+            reason: 'wrong_video',
+            message: 'This screenshot shows a different video. Watch the task video and try again.',
+          };
+        } else if (timeRead && !timeEnough) {
+          autoReject = {
+            reason: 'not_enough_watch_time',
+            message: `The screenshot shows less than the required ${Math.round(required / 60)} minutes. Keep watching, then take the screenshot.`,
+          };
+        }
       }
 
-      // 4. filename info (informational; device-local time can't be trusted vs server time)
+      if (autoReject) {
+        await MarketplaceSubmission.create({
+          ...baseDoc,
+          ocrVideoId: ocr.videoId, ocrElapsedSeconds: ocr.elapsedSeconds,
+          status: 'rejected', rejectionReason: autoReject.reason, holdsSlot: false,
+        });
+        // fingerprint is NOT registered here, so an honest retake is never flagged as a duplicate
+        return res.json({
+          success: false,
+          status: 'rejected',
+          reason: autoReject.reason,
+          message: autoReject.message,
+          duplicateFlag: false,
+          vpnBlocked: false,
+          countryBlocked: false,
+          screenshotOk: idMatches,
+          timeOk: timeEnough,
+        });
+      }
+
+      // 4. filename app (Android screenshots are named after the app on screen)
       const info = parseScreenshotFilename(req.file.originalname || '');
-      let filenameTimestampMatch = 'not_present';
       let filenameAppMatch = 'not_present';
       let filenameAppRaw = null;
       if (info.present) {
-        const ts = info.timestamp instanceof Date ? info.timestamp.getTime() : NaN;
-        if (!Number.isNaN(ts)) {
-          const expected = startedAt.getTime() + task.watchDurationSeconds * 1000;
-          filenameTimestampMatch = Math.abs(ts - expected) <= 5 * 60 * 1000 ? 'match' : 'mismatch';
-        }
         filenameAppRaw = info.appName;
         const appLower = info.appName.toLowerCase();
-        if (appLower.includes('youtube')) filenameAppMatch = 'youtube';
-        else if (appLower.includes('chrome')) filenameAppMatch = 'chrome';
+        const allowedApp = ALLOWED_PROOF_APPS.find((a) => appLower.includes(a));
+        if (allowedApp) filenameAppMatch = allowedApp;
         else if (info.likelyEdited) filenameAppMatch = 'edited';
         else filenameAppMatch = 'other';
       }
 
-      // 5. store screenshot
+      // 5. viewer history: any rejection in the last 24h means no auto-approve
+      const recentRejections = await MarketplaceSubmission.countDocuments({
+        viewerUserId,
+        status: 'rejected',
+        createdAt: { $gte: new Date(Date.now() - REJECTION_WINDOW_MS) },
+        rejectionReason: { $nin: ['expired', 'task_missing', 'duplicate_cleanup'] },
+      });
+
+      // 6. store screenshot (only proofs that reach a decision)
       const screenshotFileId = await uploadScreenshotToStorage(
         req.file.buffer,
         `Task:${taskId} Viewer:${viewerUserId}`
       );
 
-      // 6. decide: auto-approve or manual review
-      const screenshotOk = !ocr.error && ocr.videoId === task.videoId;
-      const watchedEnough = !ocr.error && ocr.elapsedSeconds !== null && ocr.elapsedSeconds >= task.watchDurationSeconds;
-      const timestampOk = Date.now() >= startedAt.getTime() + task.watchDurationSeconds * 1000; // server clock
-
+      // 7. everything below goes to manual review
       const reasons = [];
-      if (vpn.action === 'review') reasons.push('vpn_review');
       if (ocr.error) reasons.push('ocr_error');
       else {
-        if (!screenshotOk) reasons.push('video_id_mismatch');
-        if (!watchedEnough) reasons.push('watch_time_short');
+        if (!idRead) reasons.push('video_id_unreadable');
+        if (!timeRead) reasons.push('time_unreadable');
       }
-      if (!timestampOk) reasons.push('too_fast');
       if (filenameAppMatch === 'edited') reasons.push('filename_edited');
+      if (filenameAppMatch === 'other') reasons.push('filename_app_other');
+      if (recentRejections > 0) reasons.push('recent_rejection');
 
-      // 7. always create as pending; approveSubmission flips it atomically with the payout
+      // 8. always create as pending; approveSubmission flips it atomically with the payout
       let submission;
       try {
         submission = await MarketplaceSubmission.create({
-          taskId, viewerUserId, taskStartedAt: startedAt,
+          ...baseDoc,
           screenshotFileId,
-          filenameTimestampMatch, filenameAppMatch, filenameAppRaw,
-          sha256: fp.sha256, pHash: fp.pHash,
+          filenameAppMatch, filenameAppRaw,
           ocrVideoId: ocr.videoId, ocrElapsedSeconds: ocr.elapsedSeconds,
-          country: vpn.country, fraudScore: vpn.fraudScore,
           status: 'pending_review', holdsSlot: true,
           flagReason: reasons.length ? reasons.join(',') : null,
         });
@@ -375,7 +426,7 @@ router.post(
         throw e;
       }
 
-      // register the fingerprint globally regardless of outcome
+      // register the fingerprint for every proof that reaches a decision
       try {
         await ScreenshotFingerprint.create({ sha256: fp.sha256, pHash: fp.pHash, userId: viewerUserId, taskId });
       } catch (e) {
@@ -396,7 +447,6 @@ router.post(
         }
       }
 
-      // minimal response: booleans only, no raw OCR / fraud data
       res.json({
         success: true,
         status,
@@ -404,8 +454,8 @@ router.post(
         duplicateFlag: false,
         vpnBlocked: false,
         countryBlocked: false,
-        screenshotOk,
-        timeOk: watchedEnough && timestampOk,
+        screenshotOk: idMatches,
+        timeOk: timeEnough,
       });
     } catch (err) {
       console.error('POST /marketplace/submit failed', err.message);
