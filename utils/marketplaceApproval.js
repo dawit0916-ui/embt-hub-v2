@@ -108,7 +108,12 @@ async function rejectSubmission(submissionId, reason, reviewer = null) {
   );
   if (!sub) return { rejected: false, reason: 'not_pending' };
 
-  await notify(sub.viewerUserId, `❌ Your task proof was rejected: ${clean.replace(/_/g, ' ')}.`);
+  await notify(
+    sub.viewerUserId,
+    clean === 'task_problem'
+      ? '⚠️ This task had a problem on our side, not yours. It will not count against you.'
+      : `❌ Your task proof was rejected: ${clean.replace(/_/g, ' ')}.`
+  );
   return { rejected: true, viewerUserId: sub.viewerUserId };
 }
 
