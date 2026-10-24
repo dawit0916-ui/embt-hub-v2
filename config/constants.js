@@ -16,8 +16,7 @@ const PORT = process.env.PORT || 3000;
 // this on purpose — set it once here via env var and it's live everywhere.
 // Get this ID from your AdsGram dashboard (Blocks section, "Task" format).
 const FAST_TASK_ADSGRAM_BLOCK_ID = process.env.FAST_TASK_ADSGRAM_BLOCK_ID || null;
-const VPN_BLOCK_THRESHOLD = Number(process.env.VPN_BLOCK_THRESHOLD) || 90;
-const VPN_REVIEW_THRESHOLD = Number(process.env.VPN_REVIEW_THRESHOLD) || 75;
+
 const MARKETPLACE_MIN_COST = Number(process.env.MARKETPLACE_MIN_COST) || 100;
 const MARKETPLACE_MAX_COST = Number(process.env.MARKETPLACE_MAX_COST) || 50000;
 const MARKETPLACE_PENDING_EXPIRY_DAYS = Number(process.env.MARKETPLACE_PENDING_EXPIRY_DAYS) || 7;
@@ -31,8 +30,7 @@ module.exports = {
     BOT_USERNAME,
     PORT,
     FAST_TASK_ADSGRAM_BLOCK_ID,
-    VPN_BLOCK_THRESHOLD,
-    VPN_REVIEW_THRESHOLD,
+    
     MARKETPLACE_MIN_COST,
     MARKETPLACE_MAX_COST,
     MARKETPLACE_PENDING_EXPIRY_DAYS,
