@@ -56,6 +56,42 @@ async function getYoutubeMeta(videoId) {
     return { videoId, title: null, thumbnailUrl };
   }
 }
+function parseIsoDuration(iso) {
+  const m = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(String(iso || ''));
+  if (!m) return null;
+  return (Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0);
+}
+
+// Video length in seconds, or null if it can't be found
+async function getYoutubeDuration(videoId) {
+  try {
+    if (process.env.YOUTUBE_API_KEY) {
+      const r = await fetch(
+        `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoId}&key=${process.env.YOUTUBE_API_KEY}`,
+        { signal: AbortSignal.timeout(4000) }
+      );
+      if (r.ok) {
+        const d = await r.json();
+        const seconds = parseIsoDuration(d.items && d.items[0] && d.items[0].contentDetails.duration);
+        if (seconds !== null) return seconds;
+      }
+    }
+    // fallback: read the length from the public watch page
+    const r2 = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: { 'accept-language': 'en-US,en;q=0.9', 'user-agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36' },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r2.ok) {
+      const html = await r2.text();
+      const m = /"lengthSeconds":"(\d+)"/.exec(html);
+      if (m) return Number(m[1]);
+    }
+  } catch (err) {
+    console.error('getYoutubeDuration error:', err.message);
+  }
+  return null;
+}
+                  
 
 // simple per-user limiter: 5 submits / minute
 const submitHits = new Map();
@@ -116,6 +152,13 @@ router.post('/post', validateInitData, async (req, res) => {
 
     // title + thumbnail are built server-side, never trusted from the client
     const meta = await getYoutubeMeta(videoId);
+        // the video must be at least as long as the watch time the creator chose
+    const videoSeconds = await getYoutubeDuration(videoId);
+    if (videoSeconds !== null && videoSeconds < duration) {
+      return res.status(400).json({
+        error: `This video is only ${videoSeconds} seconds long, shorter than the ${Math.round(duration / 60)} minute watch time. Pick a longer video or a shorter watch time.`,
+      });
+}
 
     const task = await MarketplaceTask.create({
       creatorUserId,
@@ -330,6 +373,12 @@ router.post(
       const idMatches = idRead && normId(ocr.videoId) === normId(task.videoId);
       const timeRead = !ocr.error && ocr.elapsedSeconds !== null;
       const timeEnough = timeRead && ocr.elapsedSeconds >= required;
+            // the task asks for more time than the video has: not the viewer's fault
+      const videoTooShort = !ocr.error && ocr.totalSeconds !== null && ocr.totalSeconds < required;
+      if (videoTooShort && idMatches && task.status === 'active') {
+        // the real video is shorter than the watch time: stop sending viewers to an impossible task
+        await MarketplaceTask.updateOne({ _id: taskId, status: 'active' }, { status: 'paused', pauseReason: 'video_too_short' });
+      }
 
       // 3a. AUTO-REJECT: OCR worked, and the proof is clearly wrong
       let autoReject = null;
@@ -344,7 +393,7 @@ router.post(
             reason: 'wrong_video',
             message: 'This screenshot shows a different video. Watch the task video and try again.',
           };
-        } else if (timeRead && !timeEnough) {
+       } else if (timeRead && !timeEnough && !videoTooShort) {
           autoReject = {
             reason: 'not_enough_watch_time',
             message: `The screenshot shows less than the required ${Math.round(required / 60)} minutes. Keep watching, then take the screenshot.`,
@@ -409,6 +458,7 @@ router.post(
       if (filenameAppMatch === 'edited') reasons.push('filename_edited');
       if (filenameAppMatch === 'other') reasons.push('filename_app_other');
       if (recentRejections > 0) reasons.push('recent_rejection');
+      if (videoTooShort) reasons.push('video_shorter_than_task');
 
       // 8. always create as pending; approveSubmission flips it atomically with the payout
       let submission;
@@ -455,7 +505,7 @@ router.post(
         vpnBlocked: false,
         countryBlocked: false,
         screenshotOk: idMatches,
-        timeOk: timeEnough,
+        timeOk: timeEnough || videoTooShort,
       });
     } catch (err) {
       console.error('POST /marketplace/submit failed', err.message);
