@@ -232,6 +232,9 @@ router.post('/task/:id/resume', validateInitData, async (req, res) => {
     const creatorUserId = Number(req.tgUser.id);
     const task = await MarketplaceTask.findOne({ _id: req.params.id, creatorUserId, status: 'paused' });
     if (!task) return res.status(404).json({ error: 'Task not found or not paused' });
+        if (task.pauseReason === 'video_too_short') {
+      return res.status(400).json({ error: 'This video is shorter than the watch time. Delete this task and post it again with a shorter watch time or a longer video.' });
+    }
 
     const creator = await User.findOne({ user_id: creatorUserId }).select('balance').lean();
     if (!creator || creator.balance < task.pointCost) {
