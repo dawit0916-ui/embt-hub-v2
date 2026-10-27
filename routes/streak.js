@@ -64,19 +64,25 @@ router.post('/api/secure/streak/claim', validateInitData, async (req, res) => {
         const newCurrentStreak = missedStreak ? 1 : (user.currentStreak || 0) + 1;
         const newLongestStreak = Math.max(user.longestStreak || 0, newCurrentStreak);
 
-        user.balance = (user.balance || 0) + reward;
-        user.total_earned = (user.total_earned || 0) + reward;
-        user.streakDay = nextStreakDay;
-        user.lastClaimDate = now;
-        user.currentStreak = newCurrentStreak;
-        user.longestStreak = newLongestStreak;
-        await user.save();
-
+                const updated = await User.findOneAndUpdate(
+            { user_id: userId, lastClaimDate: user.lastClaimDate ?? null },
+            {
+                $inc: { balance: reward, total_earned: reward },
+                $set: {
+                    streakDay: nextStreakDay,
+                    lastClaimDate: now,
+                    currentStreak: newCurrentStreak,
+                    longestStreak: newLongestStreak
+                }
+            },
+            { new: true }
+        );
+        if (!updated) return res.status(400).json({ error: 'Already claimed today' });
         return res.json({
             success: true,
             claimedDay: dayToClaim,
             reward,
-            newBalance: user.balance,
+            newBalance: updated.balance,
             nextStreakDay,
             currentStreak: newCurrentStreak
         });
