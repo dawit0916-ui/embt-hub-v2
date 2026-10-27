@@ -233,58 +233,7 @@ router.get('/api/secure/available-ads', validateInitData, async (req, res) => {
     }
 });
 
-// ==========================================================================
-// SUPERSEDED — never called from the frontend (confirmed by searching every
-// JS file), and would 500 immediately if it ever were: it references
-// fields that don't exist on either schema (ad.maxWatchesPerDay,
-// AdWatch.viewedAt, AdWatch.watched — the real fields are watchesPerReset,
-// createdAt, and claimed) and never sets AdWatch's required sessionId
-// field. Looks like an earlier, abandoned draft of the ad-watch flow from
-// before the real session-based one (start-session / claim below) was
-// built. Commented out rather than deleted in case it's meant to come back
-// as a real, separate simple flow — but as written it cannot work.
-// ==========================================================================
-/*
-// Record that user watched an ad (call this AFTER ad completes)
-router.post('/api/secure/watch-ad', validateInitData, async (req, res) => {
-    try {
-        const userId = req.tgUser.id;
-        const { adId } = req.body;
 
-        if (!adId) return res.status(400).json({ error: 'Ad ID required' });
-
-        const ad = await ActiveAd.findOne({ adId, enabled: true });
-        if (!ad) return res.status(404).json({ error: 'Ad not found' });
-
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        const dailyLimit = ad.maxWatchesPerDay || 1;
-        const watchedToday = await AdWatch.countDocuments({
-            userId,
-            adId,
-            viewedAt: { $gte: today }
-        });
-
-        if (watchedToday >= dailyLimit) {
-            return res.status(400).json({ error: 'Daily watch limit reached for this ad' });
-        }
-
-        await AdWatch.create({
-            userId,
-            adId,
-            adNetwork: ad.network,
-            reward: ad.reward,
-            watched: true
-        });
-
-        return res.json({ success: true, reward: ad.reward, watchedToday: watchedToday + 1, dailyLimit });
-    } catch (err) {
-        console.error('Watch ad error:', err);
-        res.status(500).json({ error: 'Failed to record watch' });
-    }
-});
-*/
 
 const FAST_TASK_DAILY_LIMIT = 3;
 const FAST_TASK_REWARD = 100;
@@ -360,6 +309,16 @@ router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) =>
                 result = { status: 400, body: { success: false, error: 'Daily limit reached' } };
                 return;
             }
+             const credit = await User.findOneAndUpdate(
+                { user_id: userId, fast_task_credits: { $gt: 0 } },
+                { $inc: { fast_task_credits: -1 } },
+                { new: true, session }
+            );
+            if (!credit) {
+                const e = new Error('NO_CREDIT');
+                e.code = 'NO_CREDIT';
+                throw e;
+            }
 
             const updatedUser = await User.findOneAndUpdate(
                 { user_id: userId },
@@ -382,6 +341,9 @@ router.post('/api/secure/fast-task-claim', validateInitData, async (req, res) =>
         return res.status(result.status).json(result.body);
 
     } catch (err) {
+        if (err.code === 'NO_CREDIT') {
+            return res.status(403).json({ success: false, error: 'Ad not confirmed yet. Finish the task and try again in a moment.' });
+        }
         console.error('Fast task claim error:', err);
         res.status(500).json({ success: false, error: 'Failed to record claim' });
     } finally {
