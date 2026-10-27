@@ -7,13 +7,12 @@ const User = mongoose.model('User', new mongoose.Schema({
     first_name: { type: String, default: null },
     username: { type: String, default: null },
     balance: { type: Number, default: 0 },
-
+    fast_task_credits: { type: Number, default: 0 },
     total_earned: { type: Number, default: 0 },
     completed_tasks: [String],
     current_state: String,
     pending_message_cleanup: { type: [Number], default: [] },
     red_flag: { type: Boolean, default: false },
-    
   
     // --- welcome bonus ---
     welcome_bonus_claimed: { type: Boolean, default: false },
