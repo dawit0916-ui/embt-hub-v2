@@ -1,8 +1,24 @@
 const express = require('express');
 const router = express.Router();
 
-const { AdWatch } = require('../models');
+const { AdWatch, User } = require('../models');
 
+router.get('/api/adsgram/task-reward-callback', async (req, res) => {
+    try {
+        const secret = req.query.secret || req.headers['x-adsgram-secret'];
+        if (secret !== process.env.ADSGRAM_SECRET) return res.status(403).send('Forbidden');
+        const userId = Number(req.query.userId);
+        if (!userId) return res.status(400).send('Missing userId');
+        await User.updateOne(
+            { user_id: userId, fast_task_credits: { $not: { $gte: 3 } } },
+            { $inc: { fast_task_credits: 1 } }
+        );
+        return res.status(200).send('ok');
+    } catch (err) {
+        console.error('[AdsGram task callback] error:', err);
+        return res.status(500).send('error');
+    }
+});
 router.get('/api/adsgram/reward-callback', async (req, res) => {
     try {
         const { userId, sessionId } = req.query;
