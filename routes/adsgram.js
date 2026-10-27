@@ -3,11 +3,11 @@ const router = express.Router();
 
 const { AdWatch, User } = require('../models');
 
-router.get('/api/adsgram/task-reward-callback', async (req, res) => {
+router.get('/api/fast-task/reward-callback', async (req, res) => {
     try {
         const secret = req.query.secret || req.headers['x-adsgram-secret'];
         if (secret !== process.env.ADSGRAM_SECRET) return res.status(403).send('Forbidden');
-        const userId = Number(req.query.userId);
+        const userId = Number(req.query.userid || req.query.userId);
         if (!userId) return res.status(400).send('Missing userId');
         await User.updateOne(
             { user_id: userId, fast_task_credits: { $not: { $gte: 3 } } },
