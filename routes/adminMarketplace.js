@@ -91,6 +91,29 @@ const APPROVE_MESSAGES = {
   task_missing: 'Task no longer exists. Submission was rejected.',
 };
 
+router.post('/viewer/:userId/clear-rejections', validateAdmin, async (req, res) => {
+  try {
+    const userId = Number(req.params.userId);
+    if (!Number.isSafeInteger(userId)) return res.status(400).json({ error: 'Bad user id' });
+
+    const result = await MarketplaceSubmission.deleteMany({
+      viewerUserId: userId,
+      status: 'rejected',
+    });
+
+    await logAdminAction(
+      req.adminUser,
+      'marketplace_clear_rejections',
+      `Cleared ${result.deletedCount} rejected marketplace submissions for ${userId}`,
+      { target_user_id: userId }
+    );
+    res.json({ success: true, deleted: result.deletedCount });
+  } catch (err) {
+    console.error('POST /admin/marketplace/viewer/:userId/clear-rejections failed', err.message);
+    res.status(500).json({ error: 'Could not clear rejections' });
+  }
+});
+
 router.post('/:id/approve', validateAdmin, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Bad id' });
