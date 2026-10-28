@@ -18,8 +18,36 @@ const ALLOWED_PROOF_APPS = ['youtube', 'chrome', 'safari'];
 const REJECTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // OCR often confuses o/0 and i/l/1 and letter case, so compare IDs in a lookalike-safe form
+const CONFUSABLE = {
+  o: '0', d: '0', i: '1', l: '1', '|': '1', '!': '1',
+  s: '5', b: '8', g: '9', q: '9', z: '2', v: 'u',
+};
 function normId(s) {
-  return String(s || '').toLowerCase().replace(/o/g, '0').replace(/[il]/g, '1');
+  return [...String(s || '').toLowerCase()].map((c) => CONFUSABLE[c] || c).join('');
+}
+
+function editDistance(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+// true if the expected ID appears in the OCR output, allowing up to 2 misread characters
+function videoIdMatchesOcr(expected, ocr) {
+  const target = normId(expected);
+  const candidates = [ocr.videoId];
+  const tokens = String(ocr.rawText || '').match(/[A-Za-z0-9_-]{8,14}/g) || [];
+  candidates.push(...tokens);
+  return candidates.some((c) => c && editDistance(normId(c), target) <= 2);
 }
 
 // ---------------- helpers ----------------
@@ -373,7 +401,10 @@ router.post(
       // 3. OCR verdict
       const required = task.watchDurationSeconds;
       const idRead = !ocr.error && ocr.videoId !== null;
-      const idMatches = idRead && normId(ocr.videoId) === normId(task.videoId);
+      const idMatches = idRead && videoIdMatchesOcr(task.videoId, ocr);
+if (idRead && !idMatches) {
+  console.log('[ocr wrong_video]', { expected: task.videoId, read: ocr.videoId, raw: String(ocr.rawText || '').slice(0, 300) });
+}
       const timeRead = !ocr.error && ocr.elapsedSeconds !== null;
       const timeEnough = timeRead && ocr.elapsedSeconds >= required;
             // the task asks for more time than the video has: not the viewer's fault
