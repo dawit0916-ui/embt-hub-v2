@@ -495,10 +495,11 @@ router.post(
       // 7. everything below goes to manual review
       const reasons = [];
       if (ocr.error) reasons.push('ocr_error');
-      else {
-        if (!idRead) reasons.push('video_id_unreadable');
-        if (!timeRead) reasons.push('time_unreadable');
-      }
+else {
+  if (!idRead) reasons.push('video_id_unreadable');
+  else if (!idMatches) reasons.push('video_id_mismatch');
+  if (!timeRead) reasons.push('time_unreadable');
+}
       if (filenameAppMatch === 'edited') reasons.push('filename_edited');
       if (filenameAppMatch === 'other') reasons.push('filename_app_other');
       if (recentRejections > 0) reasons.push('recent_rejection');
