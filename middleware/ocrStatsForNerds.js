@@ -2,7 +2,7 @@ const { createWorker } = require('tesseract.js');
 const sharp = require('sharp');
 
 function parseStatsForNerds(text) {
-  const videoIdMatch = text.match(/Video ID:\s*([a-zA-Z0-9_-]{6,})/i);
+  const videoIdMatch = text.match(/V[il1|]deo\s*[Il1|]D\s*[:;.,]?\s*([a-zA-Z0-9_-]{6,})/i);
   const timeMatch = text.match(/(\d{1,2}:\d{2})\s*\/\s*(\d{1,2}:\d{2})/);
 
   function toSeconds(mmss) {
