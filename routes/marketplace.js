@@ -44,12 +44,18 @@ function editDistance(a, b) {
 // true if the expected ID appears in the OCR output, allowing up to 2 misread characters
 function videoIdMatchesOcr(expected, ocr) {
   const target = normId(expected);
-  const candidates = [ocr.videoId];
-  const tokens = String(ocr.rawText || '').match(/[A-Za-z0-9_-]{8,14}/g) || [];
-  candidates.push(...tokens);
-  return candidates.some((c) => c && editDistance(normId(c), target) <= 2);
+  const raw = String(ocr.rawText || '');
+  const cands = [ocr.videoId, ...(raw.match(/[A-Za-z0-9_-]{8,14}/g) || [])];
+  if (cands.some((c) => c && editDistance(normId(c), target) <= 2)) return true;
+  // last resort: ignore spaces/labels and slide a window over the whole text
+  const flat = normId(raw.replace(/[^A-Za-z0-9_-]/g, ''));
+  for (let len = target.length - 1; len <= target.length + 1; len++) {
+    for (let i = 0; i + len <= flat.length; i++) {
+      if (editDistance(flat.slice(i, i + len), target) <= 2) return true;
+    }
+  }
+  return false;
 }
-
 // ---------------- helpers ----------------
 function extractVideoId(url) {
   if (typeof url !== 'string') return null;
@@ -400,11 +406,15 @@ router.post(
 
       // 3. OCR verdict
       const required = task.watchDurationSeconds;
-      const idRead = !ocr.error && ocr.videoId !== null;
-      const idMatches = idRead && videoIdMatchesOcr(task.videoId, ocr);
-if (idRead && !idMatches) {
-  console.log('[ocr wrong_video]', { expected: task.videoId, read: ocr.videoId, raw: String(ocr.rawText || '').slice(0, 300) });
-}
+      const idFound = !ocr.error && videoIdMatchesOcr(task.videoId, ocr);
+      const idRead = !ocr.error && (ocr.videoId !== null || idFound);
+      const idMatches = idFound;
+      if (!ocr.error && !idFound) {
+        console.log('[ocr id_not_found]', { expected: task.videoId, read: ocr.videoId, raw: String(ocr.rawText || '').slice(0, 400) });
+      }
+      if (idRead && !idMatches) {
+        console.log('[ocr wrong_video]', { expected: task.videoId, read: ocr.videoId, raw: String(ocr.rawText || '').slice(0, 300) });
+      }
       const timeRead = !ocr.error && ocr.elapsedSeconds !== null;
       const timeEnough = timeRead && ocr.elapsedSeconds >= required;
             // the task asks for more time than the video has: not the viewer's fault
