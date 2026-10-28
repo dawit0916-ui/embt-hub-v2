@@ -1,4 +1,5 @@
 const { createWorker } = require('tesseract.js');
+const sharp = require('sharp');
 
 function parseStatsForNerds(text) {
   const videoIdMatch = text.match(/Video ID:\s*([a-zA-Z0-9_-]{6,})/i);
@@ -44,7 +45,13 @@ function recognize(buffer) {
 async function ocrStatsForNerds(req, res, next) {
   if (!req.file) return res.status(400).json({ error: 'No screenshot uploaded' });
   try {
-    const text = await recognize(req.file.buffer);
+    const prepped = await sharp(req.file.buffer)
+  .resize({ width: 1800 })
+  .grayscale()
+  .normalize()
+  .sharpen()
+  .toBuffer();
+const text = await recognize(prepped);
     req.ocrResult = { ...parseStatsForNerds(text), rawText: text };
   } catch (err) {
     console.error('OCR failed', err.message);
