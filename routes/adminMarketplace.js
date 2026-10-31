@@ -19,6 +19,17 @@ function shotPath(id) {
   return `/api/admin/marketplace/screenshot/${id}?exp=${exp}&sig=${signShot(id, exp)}`;
 }
 
+async function withRetry(fn, tries = 3) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  throw last;
+}
+
 router.get('/screenshot/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -34,9 +45,12 @@ router.get('/screenshot/:id', async (req, res) => {
     const sub = await MarketplaceSubmission.findById(id).select('screenshotFileId');
     if (!sub || !sub.screenshotFileId) return res.sendStatus(404);
 
-    const url = await getStorageFileUrl(sub.screenshotFileId); // server-side only
-    const upstream = await fetch(url);
-    if (!upstream.ok) return res.sendStatus(502);
+      const upstream = await withRetry(async () => {
+      const url = await getStorageFileUrl(sub.screenshotFileId); // server-side only
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r;
+    });
 
     res.set({
       'Content-Type': upstream.headers.get('content-type') || 'image/jpeg',
@@ -44,7 +58,7 @@ router.get('/screenshot/:id', async (req, res) => {
     });
     Readable.fromWeb(upstream.body).pipe(res);
   } catch (err) {
-    console.error('GET /admin/marketplace/screenshot failed', err.message);
+    console.error('GET /admin/marketplace/screenshot failed', err.message, err.cause && err.cause.code);
     res.sendStatus(500);
   }
 });
