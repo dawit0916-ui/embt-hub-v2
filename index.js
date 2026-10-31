@@ -15,7 +15,14 @@ app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS) || 2);
 
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
-
+// ---- Telegram webhook (only active when USE_WEBHOOK=true) ----
+const USE_WEBHOOK = process.env.USE_WEBHOOK === 'true';
+const WEBHOOK_PATH = '/telegram/webhook';
+const WEBHOOK_SECRET = process.env.TG_WEBHOOK_SECRET;
+if (USE_WEBHOOK) {
+  if (!WEBHOOK_SECRET) throw new Error('TG_WEBHOOK_SECRET is required when USE_WEBHOOK=true');
+  app.use(require('./bot/bot').webhookCallback(WEBHOOK_PATH, { secretToken: WEBHOOK_SECRET }));
+}
 
 app.use('/', require('./routes/adsgram'));
 app.use('/', require('./routes/verification'));
@@ -105,7 +112,48 @@ async function launchBot(attempt = 1) {
   }
 }
 
-launchBot();
+async function startWebhook() {
+  const domain = process.env.WEBHOOK_DOMAIN || 'embt-gateway.onrender.com';
+  const url = `https://${domain}${WEBHOOK_PATH}`;
+  const opts = {
+    secret_token: WEBHOOK_SECRET,
+    allowed_updates: ['message', 'callback_query', 'chat_member'],
+    drop_pending_updates: false, // keep updates sent during a deploy
+    max_connections: 10,
+  };
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      bot.botInfo = bot.botInfo || (await bot.telegram.getMe());
+      await bot.telegram.setWebhook(url, opts);
+      botConnected = true;
+      console.log('✅ Telegram webhook set:', url);
+      break;
+    } catch (err) {
+      const delay = Math.min(60000, attempt * 5000);
+      console.error(`⚠️ setWebhook failed (attempt ${attempt}): ${err.message || 'no reason'}, retrying in ${delay / 1000}s`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+
+  // every 10 min: make sure nothing removed the webhook, and log Telegram's last error
+  setInterval(async () => {
+    try {
+      const info = await bot.telegram.getWebhookInfo();
+      if (info.last_error_message) console.warn('[webhook last error]', info.last_error_message);
+      if (info.url !== url) {
+        console.warn('Webhook missing or changed, resetting:', info.url);
+        await bot.telegram.setWebhook(url, opts);
+      }
+    } catch (e) {
+      console.error('Webhook check failed', e.message);
+    }
+  }, 10 * 60 * 1000);
+}
+
+if (USE_WEBHOOK) startWebhook();
+else launchBot();
+
 function shutdown(signal) {
   console.log(`${signal} received, stopping bot`);
   try { bot.stop(signal); } catch (_) {} // throws if the bot never started
