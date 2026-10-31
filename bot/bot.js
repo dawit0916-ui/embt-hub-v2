@@ -1,23 +1,24 @@
 const https = require('https');
-const { Telegraf } = require('telegraf');
+const { Telegraf, Telegram } = require('telegraf');
 
 const bot = new Telegraf(process.env.BOT_TOKEN, {
   telegram: {
     agent: new https.Agent({ keepAlive: true, keepAliveMsecs: 10000, family: 4 }),
+    webhookReply: false, // normal API calls, so ctx.reply returns the real message
   },
 });
 
-// Retry only when the request never reached Telegram (safe for any call),
-// or when a read-only call failed. Never retry a possible half-sent message.
+// Retry only when the request never reached Telegram, or for read-only calls.
 const NEVER_SENT = new Set(['ETIMEDOUT', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH']);
-const READ_ONLY = new Set(['getMe', 'getChatMember', 'getChat', 'getFile']);
+const READ_ONLY = new Set(['getMe', 'getChatMember', 'getChat', 'getFile', 'getWebhookInfo']);
 const TRIES = 3;
 const CALL_TIMEOUT_MS = 20000;
 
-const origCallApi = bot.telegram.callApi.bind(bot.telegram);
+// Patch the class, because Telegraf makes a new Telegram instance per update
+const origCallApi = Telegram.prototype.callApi;
 
-bot.telegram.callApi = async function (method, data, ...rest) {
-  if (method === 'getUpdates') return origCallApi(method, data, ...rest); // polling manages itself
+Telegram.prototype.callApi = async function (method, data, ...rest) {
+  if (method === 'getUpdates') return origCallApi.call(this, method, data, ...rest);
 
   let lastErr;
   for (let i = 1; i <= TRIES; i++) {
@@ -29,7 +30,7 @@ bot.telegram.callApi = async function (method, data, ...rest) {
           CALL_TIMEOUT_MS
         );
       });
-      return await Promise.race([origCallApi(method, data, ...rest), timeout]);
+      return await Promise.race([origCallApi.call(this, method, data, ...rest), timeout]);
     } catch (err) {
       lastErr = err;
       const code = err.code || err.errno;
