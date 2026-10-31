@@ -29,7 +29,7 @@ purchaseRoutes.get(
     res.json({
       userId: req.user.id,
       balance: balanceOf(req.user.doc),
-      devices: (req.user.doc.storeDevices || []).length,
+      devices: await col('devices').countDocuments({ userId: req.user.id }),
       licenses,
     });
   })
