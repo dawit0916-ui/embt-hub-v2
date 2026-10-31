@@ -57,6 +57,7 @@ app.use('/', require('./routes/shop'));
 // them all in one top-to-bottom executed file.
 // ==========================================================================
 const bot = require('./bot/bot');
+const storeLink = require('./bot/storeLink');
 require('./bot/handlers');
 require('./bot/ghostValidator');
 require('./bot/reminders');
@@ -80,6 +81,17 @@ mongoose.connect(process.env.MONGO_URI).then(() => {
 });
 
 app.get('/', (req, res) => res.send('Gateway Active'));
+if (process.env.STORE_JWT_SECRET) {
+    import('./store/index.js').then(({ createStore }) => {
+        const store = createStore({
+            sendMessage: (chatId, html) => bot.telegram.sendMessage(chatId, html, { parse_mode: 'HTML' }),
+        });
+        app.use('/store', store.router);
+        storeLink.setStore(store);
+        store.init().catch((e) => console.error('[store]', e.message));
+        console.log('APK store mounted at /store');
+    }).catch((e) => console.error('[store] failed to start:', e.message));
+                    }
 
 let botConnected = false;
 
