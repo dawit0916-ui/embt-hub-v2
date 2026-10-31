@@ -99,3 +99,10 @@ async function launchBot(attempt = 1) {
 }
 
 launchBot();
+function shutdown(signal) {
+  console.log(`${signal} received, stopping bot`);
+  try { bot.stop(signal); } catch (_) {} // throws if the bot never started
+  setTimeout(() => process.exit(0), 1500);
+}
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));
