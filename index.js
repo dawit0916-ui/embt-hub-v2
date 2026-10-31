@@ -92,7 +92,14 @@ async function launchBot(attempt = 1) {
       console.error(`⚠️ Telegram not reachable (attempt ${attempt}): ${err.message || 'no reason'} — retrying in ${delay / 1000}s`);
       return setTimeout(() => launchBot(attempt + 1), delay);
     }
-    // polling died after a good start (e.g. 409 conflict): restart the process as before
+        // polling died after a good start (e.g. 409 conflict)
+    if (/409/.test(err.message || '')) {
+      // another instance took over polling (normal during a deploy):
+      // stop quietly, do NOT exit, or Render restarts us and we steal updates back
+      console.warn('⚠️ Another instance took over polling, stopping this one');
+      try { bot.stop('409'); } catch (_) {}
+      return;
+    }
     console.error('❌ Bot polling died, forcing restart:', err.message);
     process.exit(1);
   }
