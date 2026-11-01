@@ -33,6 +33,8 @@ async function askForCourse(ctx) {
 
 // --- TELEGRAM BOT HANDLERS ---
 bot.start(async (ctx) => {
+    // a user who comes back can receive reminders again
+    UserReminder.updateOne({ user_id: ctx.from.id }, { $set: { unreachable: false } }).catch(() => {});
     const referrerId = ctx.startPayload;
     const userId = ctx.from.id;
     const currentUsername = ctx.from.username || null;
