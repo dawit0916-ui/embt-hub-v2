@@ -7,6 +7,7 @@ const UserReminder = mongoose.model('UserReminder', new mongoose.Schema({
     welcome_message_deleted: { type: Boolean, default: false },
     deleted_at: { type: Date, default: null },
     reminder_count: { type: Number, default: 0 },
+        unreachable: { type: Boolean, default: false }, // chat not found / bot blocked: stop retrying
     createdAt: { type: Date, default: Date.now }
 }));
 
