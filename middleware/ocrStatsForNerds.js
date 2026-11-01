@@ -72,6 +72,11 @@ async function callOcrSpace(jpeg) {
 
 async function ocrStatsForNerds(req, res, next) {
   if (!req.file) return res.status(400).json({ error: 'No screenshot uploaded' });
+    // a duplicate is rejected before the OCR verdict is used, so do not pay for OCR
+  if (req.fingerprintCheck && req.fingerprintCheck.isDuplicate) {
+    req.ocrResult = { videoId: null, elapsedSeconds: null, totalSeconds: null, rawText: '' };
+    return next();
+  }
   const t0 = Date.now();
   const found = { videoId: null, elapsedSeconds: null, totalSeconds: null };
   const texts = [];
