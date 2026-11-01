@@ -42,7 +42,8 @@ async function fingerprintCheck(req, res, next) {
     const recent = await ScreenshotFingerprint.find({})
       .sort({ submittedAt: -1 })
       .limit(5000)
-      .select('pHash');
+       .select('pHash')
+      .lean();
 
     for (const record of recent) {
       if (record.pHash.length !== pHash.length) continue;
