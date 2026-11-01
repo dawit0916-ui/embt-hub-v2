@@ -128,30 +128,6 @@ setInterval(async () => {
     try {
         console.log("🔄 [Reminder Check] Checking for deleted welcome messages...");
 
-        // Case 1: users still holding message IDs to check — verify if deleted
-        const usersWithPending = await User.find({
-            pending_message_cleanup: { $exists: true, $ne: [] },
-            is_banned: false
-        }).lean();
-
-        for (const user of usersWithPending) {
-            for (const msgId of user.pending_message_cleanup) {
-                try {
-                    await bot.telegram.getMessage(user.user_id, msgId);
-                } catch (err) {
-                    if (err.message.includes('not found')) {
-                        console.log(`[Reminder] Welcome message deleted for user ${user.user_id}`);
-                        await UserReminder.updateOne(
-                            { user_id: user.user_id },
-                            { $set: { welcome_message_deleted: true, deleted_at: new Date(), last_reminder_sent: null } },
-                            { upsert: true }
-                        );
-                    }
-                }
-                await new Promise(resolve => setTimeout(resolve, 50));
-            }
-        }
-
         // Case 2: cleanup array already empty (cleared by /api/secure/profile)
         // but reminder flag never got flipped — these were falling through before
         const usersAlreadyCleared = await User.find({
