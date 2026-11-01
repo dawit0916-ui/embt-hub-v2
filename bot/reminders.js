@@ -79,9 +79,21 @@ async function checkAndSendReminders() {
             ]
         });
 
-        console.log(`[Reminder Check] Found ${usersNeedingReminder.length} users needing reminders`);
+        // skip (and clean up) reminder records whose user no longer exists
+        const ids = usersNeedingReminder.map((r) => r.user_id);
+        const existing = new Set(
+            (await User.find({ user_id: { $in: ids } }).select('user_id').lean()).map((u) => u.user_id)
+        );
+        const orphanIds = ids.filter((id) => !existing.has(id));
+        if (orphanIds.length) {
+            await UserReminder.deleteMany({ user_id: { $in: orphanIds } });
+            console.log(`[Reminder Check] Removed ${orphanIds.length} reminder records for deleted users`);
+        }
+        const targets = usersNeedingReminder.filter((r) => existing.has(r.user_id));
 
-        for (const reminder of usersNeedingReminder) {
+        console.log(`[Reminder Check] Found ${targets.length} users needing reminders`);
+
+        for (const reminder of targets) {
             const sent = await sendReminderMessage(reminder.user_id);
             if (sent) {
                 await new Promise(resolve => setTimeout(resolve, 100)); // Rate limiting
