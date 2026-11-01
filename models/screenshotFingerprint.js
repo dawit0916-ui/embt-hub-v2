@@ -9,5 +9,6 @@ const screenshotFingerprintSchema = new mongoose.Schema({
   taskId: { type: mongoose.Schema.Types.ObjectId, ref: 'MarketplaceTask', required: true },
   submittedAt: { type: Date, default: Date.now },
 });
-
+// the perceptual check sorts by newest first; without this index Mongo sorts the whole collection
+screenshotFingerprintSchema.index({ submittedAt: -1 });
 module.exports = mongoose.model('ScreenshotFingerprint', screenshotFingerprintSchema);
