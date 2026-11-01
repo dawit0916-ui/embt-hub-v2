@@ -150,3 +150,40 @@ async function decide(req, res, approve) {
 
 adminRoutes.post('/admin/refunds/:id/approve', wrap((req, res) => decide(req, res, true)));
 adminRoutes.post('/admin/refunds/:id/reject', wrap((req, res) => decide(req, res, false)));
+
+/** Remove one version from the catalog. Does NOT touch the GitHub release files. */
+adminRoutes.delete(
+  '/admin/versions/:packageId/:versionCode',
+  wrap(async (req, res) => {
+    const packageId = needPackage(req.params.packageId);
+    const versionCode = needInt(req.params.versionCode, 'versionCode');
+    const r = await col('versions').deleteOne({ packageId, versionCode });
+    const top = await col('versions').find({ packageId }).sort({ versionCode: -1 }).limit(1).toArray();
+    await col('apps').updateOne({ _id: packageId }, { $set: { latestVersionCode: top.length ? top[0].versionCode : 0 } });
+    res.json({ ok: true, deleted: r.deletedCount });
+  })
+);
+
+/** Remove an app and all of its versions from the catalog. Licenses and purchase history are kept. */
+adminRoutes.delete(
+  '/admin/apps/:packageId',
+  wrap(async (req, res) => {
+    const packageId = needPackage(req.params.packageId);
+    const v = await col('versions').deleteMany({ packageId });
+    const a = await col('apps').deleteOne({ _id: packageId });
+    res.json({ ok: true, apps: a.deletedCount, versions: v.deletedCount });
+  })
+);
+
+/** Empty the whole catalog (apps and versions). Needs {"confirm":"DELETE ALL"}. GitHub releases are untouched. */
+adminRoutes.post(
+  '/admin/reset-catalog',
+  wrap(async (req, res) => {
+    if (req.body?.confirm !== 'DELETE ALL') {
+      throw new AppError(400, 'confirm_required', 'Send {"confirm":"DELETE ALL"}');
+    }
+    const v = await col('versions').deleteMany({});
+    const a = await col('apps').deleteMany({});
+    res.json({ ok: true, apps: a.deletedCount, versions: v.deletedCount });
+  })
+);
