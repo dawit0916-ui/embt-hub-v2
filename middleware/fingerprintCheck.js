@@ -45,14 +45,17 @@ async function fingerprintCheck(req, res, next) {
        .select('pHash')
       .lean();
 
+    let nearest = 64;
     for (const record of recent) {
       if (record.pHash.length !== pHash.length) continue;
       const dist = hammingDistance(record.pHash, pHash);
+      if (dist < nearest) nearest = dist;
       if (dist <= HAMMING_THRESHOLD) {
         req.fingerprintCheck = { sha256, pHash, isDuplicate: true, matchType: 'perceptual', distance: dist };
         return next();
       }
     }
+    console.log('[fingerprint] nearest distance', nearest);
 
     req.fingerprintCheck = { sha256, pHash, isDuplicate: false };
     next();
