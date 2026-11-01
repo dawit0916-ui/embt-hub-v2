@@ -61,6 +61,12 @@ async function sendReminderMessage(userId) {
         return true;
     } catch (err) {
         console.error(`[Reminder Send Error] User ${userId}:`, err.message);
+        // chat not found / bot blocked / account deleted: retrying never works, so stop trying
+        const code = err.response && err.response.error_code;
+        const desc = String((err.response && err.response.description) || err.message || '');
+        if ((code === 400 || code === 403) && /chat not found|bot was blocked|user is deactivated|can't initiate/i.test(desc)) {
+            await UserReminder.updateOne({ user_id: userId }, { $set: { unreachable: true } }).catch(() => {});
+        }
         return false;
     }
 }
@@ -73,6 +79,7 @@ async function checkAndSendReminders() {
         // Find users with deleted welcome messages who haven't gotten a reminder in 6 hours
         const usersNeedingReminder = await UserReminder.find({
             welcome_message_deleted: true,
+            unreachable: { $ne: true },
             $or: [
                 { last_reminder_sent: null },
                 { last_reminder_sent: { $lt: sixHoursAgo } }
@@ -168,7 +175,7 @@ setInterval(async () => {
                         deleted_at: new Date(),
                         last_reminder_sent: null
                     });
-                } else if (!rec.welcome_message_deleted) {
+                } else if (!rec.welcome_message_deleted && !rec.unreachable) {
                     console.log(`[Reminder] Flagging already-cleared user ${uid} as eligible`);
                     await UserReminder.updateOne(
                         { user_id: uid },
