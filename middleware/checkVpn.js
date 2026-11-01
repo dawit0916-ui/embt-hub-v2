@@ -3,6 +3,8 @@ const axios = require('axios');
 const ipCache = new Map();
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const CACHE_MAX = 5000;
+const failCache = new Map(); // ip -> time of last failed lookup
+const FAIL_TTL_MS = 20 * 1000;
 
 function cleanIp(raw) {
   return String(raw || '').replace(/^::ffff:/, '');
@@ -16,7 +18,7 @@ function getClientIp(req) {
 // Provider 1: free, no key, HTTPS
 async function lookupIpwho(ip) {
   try {
-    const { data } = await axios.get(`https://ipwho.is/${ip}`, { timeout: 4000 });
+    const { data } = await axios.get(`https://ipwho.is/${ip}`, { timeout: 2500 });
     if (data && data.success && data.country_code) return String(data.country_code).toUpperCase();
     console.error('checkVpn: ipwho.is returned no country:', data && data.message);
   } catch (err) {
@@ -28,7 +30,7 @@ async function lookupIpwho(ip) {
 // Provider 2 (backup): free, plain-text 2-letter country code
 async function lookupIpapi(ip) {
   try {
-    const { data } = await axios.get(`https://ipapi.co/${ip}/country/`, { timeout: 4000, responseType: 'text' });
+    const { data } = await axios.get(`https://ipapi.co/${ip}/country/`, { timeout: 2500, responseType: 'text' });
     const code = String(data || '').trim().toUpperCase();
     if (/^[A-Z]{2}$/.test(code)) return code;
     console.error('checkVpn: ipapi.co returned no country');
@@ -41,6 +43,8 @@ async function lookupIpapi(ip) {
 async function getCountry(ip) {
   const cached = ipCache.get(ip);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.country;
+    const failedAt = failCache.get(ip);
+  if (failedAt && Date.now() - failedAt < FAIL_TTL_MS) return null; // providers just failed, do not wait again
 
   let source = 'ipwho.is';
   let country = await lookupIpwho(ip);
@@ -52,7 +56,10 @@ async function getCountry(ip) {
   console.log('checkVpn lookup', { ip, country, source: country ? source : 'none' });
   if (country) {
     if (ipCache.size >= CACHE_MAX) ipCache.clear();
-    ipCache.set(ip, { ts: Date.now(), country }); // never cache a failed lookup
+    ipCache.set(ip, { ts: Date.now(), country });
+  } else {
+    if (failCache.size >= CACHE_MAX) failCache.clear();
+    failCache.set(ip, Date.now());
   }
   return country;
 }
