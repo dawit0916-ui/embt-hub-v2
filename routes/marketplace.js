@@ -361,15 +361,34 @@ async function precheck(req, res, next) {
   }
 }
 
+// logs how long each stage of /submit takes, to find what is slow
+function timed(name, mw) {
+  return (req, res, next) => {
+    const t = Date.now();
+    mw(req, res, (err) => {
+      (req._timing = req._timing || {})[name] = Date.now() - t;
+      next(err);
+    });
+  };
+}
+function logSubmitTiming(req, res, next) {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    console.log('[submit timing]', { ...(req._timing || {}), totalMs: Date.now() - t0, status: res.statusCode });
+  });
+  next();
+}
+
 router.post(
   '/submit',
   validateInitData,
+  logSubmitTiming,
   submitRateLimit,
   uploadScreenshot,
-  precheck,
-  checkVpn,
-  fingerprintCheck,
-  ocrStatsForNerds,
+  timed('precheck', precheck),
+  timed('country', checkVpn),
+  timed('fingerprint', fingerprintCheck),
+  timed('ocr', ocrStatsForNerds),
   async (req, res) => {
     const viewerUserId = Number(req.tgUser.id);
     const task = req.mpTask;
