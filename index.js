@@ -166,6 +166,8 @@ async function startWebhook() {
 if (USE_WEBHOOK) startWebhook();
 else launchBot();
 
+require('./utils/historyCleanup').startHistoryCleanup();
+
 function shutdown(signal) {
   console.log(`${signal} received, stopping bot`);
   try { bot.stop(signal); } catch (_) {} // throws if the bot never started
