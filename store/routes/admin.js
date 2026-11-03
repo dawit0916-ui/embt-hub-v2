@@ -23,23 +23,23 @@ adminRoutes.post(
     const packageId = needPackage(b.packageId);
     if (!ACCESS.has(b.access)) throw new AppError(400, 'bad_access');
     const price = b.access === 'paid' ? needInt(b.price, 'price', { min: 1 }) : 0;
-    await col('apps').updateOne(
-      { _id: packageId },
-      {
-        $set: {
-          name: needString(b.name, 'name', 100),
-          iconUrl: typeof b.iconUrl === 'string' ? b.iconUrl.slice(0, 500) : '',
-          screenshots: Array.isArray(b.screenshots) ? b.screenshots.slice(0, 10).map(String) : [],
-          description: typeof b.description === 'string' ? b.description.slice(0, 5000) : '',
-          category: typeof b.category === 'string' ? b.category.slice(0, 50) : '',
-          access: b.access,
-          price,
-          hidden: b.hidden === true,
-        },
-        $setOnInsert: { latestVersionCode: 0 },
-      },
-      { upsert: true }
-    );
+    const set = {
+      name: needString(b.name, 'name', 100),
+      access: b.access,
+      price,
+    };
+    // Only fields that were sent are changed, so registering a new version never wipes an icon or description.
+    if (typeof b.iconUrl === 'string') set.iconUrl = b.iconUrl.slice(0, 500);
+    if (Array.isArray(b.screenshots)) set.screenshots = b.screenshots.slice(0, 10).map(String);
+    if (typeof b.description === 'string') set.description = b.description.slice(0, 5000);
+    if (typeof b.category === 'string') set.category = b.category.slice(0, 50);
+    if (typeof b.hidden === 'boolean') set.hidden = b.hidden;
+    const defaults = { iconUrl: '', screenshots: [], description: '', category: '', hidden: false };
+    const onInsert = { latestVersionCode: 0 };
+    for (const k of Object.keys(defaults)) {
+      if (!(k in set)) onInsert[k] = defaults[k];
+    }
+    await col('apps').updateOne({ _id: packageId }, { $set: set, $setOnInsert: onInsert }, { upsert: true });
     res.json({ ok: true });
   })
 );
@@ -78,6 +78,10 @@ adminRoutes.post(
         size: needInt(f.size, 'file.size', { min: 1 }),
       };
     });
+    const minSdk = b.minSdk == null ? 0 : needInt(b.minSdk, 'minSdk', { min: 1, max: 100 });
+    const targetSdk = b.targetSdk == null ? 0 : needInt(b.targetSdk, 'targetSdk', { min: 1, max: 100 });
+    const signer = b.signer == null ? '' : String(b.signer).toLowerCase();
+    if (signer && !HEX64.test(signer)) throw new AppError(400, 'bad_signer');
     const hasBase = files.some((f) => f.role === 'base') || files.some((f) => f.role === 'universal');
     if (!hasBase) throw new AppError(400, 'no_base', 'Need a base or universal file');
 
@@ -87,6 +91,9 @@ adminRoutes.post(
         versionCode,
         versionName: needString(b.versionName, 'versionName', 50),
         changelog: typeof b.changelog === 'string' ? b.changelog.slice(0, 5000) : '',
+        minSdk,
+        targetSdk,
+        signer,
         files,
         createdAt: new Date(),
       });

@@ -61,6 +61,10 @@ appsRoutes.get(
         versionCode: v.versionCode,
         versionName: v.versionName,
         changelog: v.changelog ?? '',
+        addedAt: v.createdAt ? new Date(v.createdAt).toISOString() : '',
+        minSdk: Number.isInteger(v.minSdk) ? v.minSdk : 0,
+        targetSdk: Number.isInteger(v.targetSdk) ? v.targetSdk : 0,
+        signer: typeof v.signer === 'string' ? v.signer : '',
         files: v.files.map((f) => ({
           key: f.key,
           role: f.role,
