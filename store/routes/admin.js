@@ -76,6 +76,7 @@ adminRoutes.post(
         assetId: needInt(f.assetId, 'file.assetId', { min: 1 }),
         sha256,
         size: needInt(f.size, 'file.size', { min: 1 }),
+        default: f.default === false ? false : true,
       };
     });
     const minSdk = b.minSdk == null ? 0 : needInt(b.minSdk, 'minSdk', { min: 1, max: 100 });

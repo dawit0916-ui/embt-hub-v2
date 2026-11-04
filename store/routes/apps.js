@@ -73,6 +73,7 @@ appsRoutes.get(
           requires: f.requires ?? [],
           sha256: f.sha256,
           size: f.size,
+          default: f.default !== false,
         })),
       })),
     });
