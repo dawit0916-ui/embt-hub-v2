@@ -12,7 +12,7 @@ appsRoutes.get(
   wrap(async (req, res) => {
     const list = await col('apps')
       .find({ hidden: { $ne: true } })
-      .project({ name: 1, iconUrl: 1, latestVersionCode: 1, access: 1, price: 1 })
+      .project({ name: 1, iconUrl: 1, latestVersionCode: 1, access: 1, price: 1, category: 1 })
       .sort({ name: 1 })
       .limit(500)
       .toArray();
@@ -29,6 +29,7 @@ appsRoutes.get(
         latestVersionCode: a.latestVersionCode ?? 0,
         access: a.access,
         price: a.price ?? 0,
+        category: a.category ?? '',
         license: owned.get(a._id) ?? null,
       })),
     });
