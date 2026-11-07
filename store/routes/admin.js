@@ -34,7 +34,8 @@ adminRoutes.post(
     if (typeof b.description === 'string') set.description = b.description.slice(0, 5000);
     if (typeof b.category === 'string') set.category = b.category.slice(0, 50);
     if (typeof b.hidden === 'boolean') set.hidden = b.hidden;
-    const defaults = { iconUrl: '', screenshots: [], description: '', category: '', hidden: false };
+    if (typeof b.featured === 'boolean') set.featured = b.featured;
+    const defaults = { iconUrl: '', screenshots: [], description: '', category: '', hidden: false, featured: false };
     const onInsert = { latestVersionCode: 0 };
     for (const k of Object.keys(defaults)) {
       if (!(k in set)) onInsert[k] = defaults[k];
@@ -193,5 +194,16 @@ adminRoutes.post(
     const v = await col('versions').deleteMany({});
     const a = await col('apps').deleteMany({});
     res.json({ ok: true, apps: a.deletedCount, versions: v.deletedCount });
+  })
+);
+
+/** Show or hide an app in the Featured row on Home. */
+adminRoutes.post(
+  '/admin/featured',
+  wrap(async (req, res) => {
+    const packageId = needPackage(req.body?.packageId);
+    const r = await col('apps').updateOne({ _id: packageId }, { $set: { featured: req.body?.featured === true } });
+    if (r.matchedCount !== 1) throw new AppError(404, 'app_not_found');
+    res.json({ ok: true });
   })
 );
